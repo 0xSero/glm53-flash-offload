@@ -79,7 +79,7 @@ checkpoint; metric = top-1 agreement and mean KL over the reference top-20.
 ## Known issues
 
 - `fast` mode decode is not exact (CPU tier, see Quality); fix in progress, will ship as a new digest.
-- **Streaming in digest `sha256:1159044a…` is delivered at half speed** (fixed in repo `fe97bcf`, shipped in digest `sha256:bb633b0b…`). The
+- **Streaming in digest `sha256:1159044a…` is delivered at half speed** (fixed in repo `fe97bcf`, shipped and verified in digest `sha256:bb633b0b…`, run P002b below). The
   server generates at the full rate (~29 tok/s), but every streaming endpoint (`/v1/chat/completions`,
   `/v1/completions`, `/generate` with `stream: true`) awaited the client-disconnect check after each event, which let
   the generator run a whole decode step before the next event went out: clients received ~14.4 tok/s and the backlog
@@ -174,8 +174,24 @@ recorded here per digest.
 
 | digest | panel top-1 / KL | prefill 8k / 32k | decode C1 / C2 / C4 (aggregate) | C1 at 32k | ready after |
 |---|---|---|---|---|---|
-| `bb633b0b` (repo `fe97bcf`, fast mode) | pending (test host offline) | pending | pending | pending | pending |
+| `bb633b0b` (repo `fe97bcf`, fast mode) | 1.0000 / 0 (2,154 positions) | 700.2 / 958.0 tok/s | 28.88 / 31.27 / 35.00 tok/s | 27.56 tok/s | 201 s |
 | `1159044a` (repo `c4b9160`, fast mode) | 1.0000 / 0 (2,154 positions) | 707 / 953 tok/s | 29.03 / 31.38 / 34.88 tok/s | 27.85 tok/s | 141 s |
+
+Run P002b, 2026-10-01, digest `bb633b0b` (streaming fix), README command on a bridge network. The host had one RTX 3090
+left, device 0, which also drives the display (~1 GB less free VRAM than P001's headless GPU 1); every number is within
+2 % of P001. Streaming delivery (client-side arrival time of every SSE event, one full greedy answer each, 10-s bins):
+
+| endpoint | prompt | answer | delivered | 10-s bins (tok/s) | last 1 s |
+|---|---|---|---|---|---|
+| `/generate` | 507 | 2,518 tok | 28.98 tok/s | 29.0 29.5 28.7 29.1 29.4 28.6 28.7 28.9 28.9 | 1.2 % |
+| chat | 515 | 3,007 tok | 28.65 tok/s | 30.0 29.9 28.3 28.4 28.5 28.6 26.8 28.1 28.1 29.9 28.4 | 0.9 % |
+| `/generate` | 32,314 | 2,605 tok | 28.71 tok/s | 28.6 29.6 29.2 28.7 29.0 28.3 28.4 28.6 28.0 28.4 | 1.1 % |
+| chat | 32,224 | 2,525 tok | 28.76 tok/s | 30.2 29.4 30.4 26.9 26.4 28.0 29.6 29.7 28.3 | 1.4 % |
+
+Delivery equals the generation rate from the first bin, with no end-of-answer burst (digest `1159044a`: ~14.4 tok/s
+delivered, ~50 % of the text in the final flush). The local-ai-registry lab gates on the registry launch form all pass,
+including speed: load, chat, reasoning, tools, context (93,437-token prompt), speed 28.8 tok/s over the first 30 s right
+after the context gate; 330 s. Raw files and the bin script: [`results/P002b-stream-fix-smoke/`](results/P002b-stream-fix-smoke/).
 
 Run P001, 2026-10-01, RTX 3090 (GPU 1 of the measured host), anonymous `docker pull` of the digest, then the README
 command on a bridge network; every number within 5 % of the campaign's G067 (710 / 951, 28.15 / 31.57 / 33.98,
@@ -183,9 +199,8 @@ command on a bridge network; every number within 5 % of the campaign's G067 (710
 (237.7 GB) at its lowest; VRAM at ready 22.7 GiB. A second start **without** `--ulimit memlock=-1` (the registry
 launch form) also loaded and served, so the flag is recommended but not required with this driver. The
 local-ai-registry lab gates on that start: load, chat, reasoning, tools and context (93,437-token prompt, needle
-found) pass; the speed gate measured 14.4 tok/s over its first 30 s window because it ran right after the 93k-token
-context gate: a long prefill hands 10.9 GB of expert-cache slots back for activations and re-takes them empty, so
-decode runs slower until the cache has re-warmed (the same answer averaged 27.6 tok/s over its 4,453 tokens). Raw files:
+found) pass; the speed gate measured 14.4 tok/s over its first 30 s window: that was the half-speed streaming defect of
+this digest (see Known issues), not cache re-warm. Raw files:
 [`results/P001-image-smoke/`](results/P001-image-smoke/).
 
 ## Configuration
