@@ -79,9 +79,17 @@ checkpoint; metric = top-1 agreement and mean KL over the reference top-20.
 ## Known issues
 
 - `fast` mode decode is not exact (CPU tier, see Quality); fix in progress, will ship as a new digest.
-- After a long prompt (>= 8,192 tokens per chunk) the elastic cache gives 10.9 GB of slots back for prefill and
-  re-takes them empty, so the first tens of seconds of the following decode run at roughly half speed until the cache
-  re-warms (measured: 14.4 tok/s over the first 30 s after a 93k-token prompt, 27.6 tok/s over the whole answer).
+- **Streaming in digest `sha256:1159044a…` is delivered at half speed** (fixed in the repo, rebuild pending). The
+  server generates at the full rate (~29 tok/s), but every streaming endpoint (`/v1/chat/completions`,
+  `/v1/completions`, `/generate` with `stream: true`) awaited the client-disconnect check after each event, which let
+  the generator run a whole decode step before the next event went out: clients received ~14.4 tok/s and the backlog
+  arrived in one burst when the answer finished. Non-streaming responses and every number in this README (sweep
+  aggregate and per-stream rates use first/last token times and the server's token counts) are unaffected. Earlier
+  versions of this list blamed the elastic cache for the "slow first 30 s after a long prompt"; that was this defect.
+  Fix: the disconnect flag is polled by a side task (`GLM53_DISCONNECT_CHECK_S`, default 0.1 s); measured on the
+  campaign server with the same change (G072): delivered tok/s per 10-s bin 28.3-29.3 from the first bin after 512 /
+  32k / 64k-token prompts (was 14.1-14.9 with a 130-185-token burst at the end). Check any server with
+  `python3 bench/stream_rate.py --url http://HOST:30000` (PASS = text arrives evenly, no end burst).
 - `fast` mode keeps two copies of the experts in RAM (~235 GB); a single-copy fast mode (~170 GB) is in progress.
 
 ## Host requirements

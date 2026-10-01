@@ -260,6 +260,25 @@ def sse(obj):
     return "data: " + json.dumps(obj) + "\n\n"
 
 
+DISC_S = float(os.environ.get("GLM53_DISCONNECT_CHECK_S", "0.1"))
+
+
+def watch_disconnect(req):
+    """Client-disconnect flag polled by a side task. Awaiting req.is_disconnected() inside a streaming loop suspends the
+    stream coroutine once per event, and the generator task then runs a whole decode step before the next event goes
+    out: streams were delivered at ~half the generation rate with the backlog flushed at the end (G072). The stream
+    loops only read the flag; the side task polls every GLM53_DISCONNECT_CHECK_S (0.1 s)."""
+    gone = asyncio.Event()
+
+    async def watch():
+        while not gone.is_set():
+            if await req.is_disconnected():
+                gone.set()
+                return
+            await asyncio.sleep(DISC_S)
+    return gone, asyncio.create_task(watch())
+
+
 # ---- SGLang-shaped endpoints (benchmark / quality tools) ----------------------------------------------------------
 
 @app.post("/generate")
@@ -280,13 +299,15 @@ async def generate(req: Request):
     if body.get("stream"):
         async def events():
             g = run_job(ids, sp)
+            gone, wt = watch_disconnect(req)
             try:
                 async for text, n, fin in g:
                     yield sse({"text": text, "meta_info": {"prompt_tokens": P, "completion_tokens": n, "finish_reason": fin}})
-                    if fin is None and await req.is_disconnected():
+                    if fin is None and gone.is_set():
                         break
                 yield "data: [DONE]\n\n"
             finally:
+                gone.set(); wt.cancel()
                 await g.aclose()
         return StreamingResponse(events(), media_type="text/event-stream")
     text, n, fin = "", 0, None
@@ -335,6 +356,7 @@ async def chat(req: Request):
     if body.get("stream"):
         async def events():
             g = run_job(ids, sp, stops)
+            gone, wt = watch_disconnect(req)
             sent, in_think, held = 0, thinking, ""
             base = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": args.served_name}
             yield sse(dict(base, choices=[{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}]))
@@ -363,7 +385,7 @@ async def chat(req: Request):
                         else:
                             yield sse(dict(base, choices=[{"index": 0, "delta": {"content": new}, "finish_reason": None}]))
                             break
-                    if fin is None and await req.is_disconnected():
+                    if fin is None and gone.is_set():
                         break
                 reason = (fin or {}).get("type", "stop")
                 if tools:
@@ -377,6 +399,7 @@ async def chat(req: Request):
                 yield sse(dict(base, choices=[{"index": 0, "delta": {}, "finish_reason": reason}], usage=usage))
                 yield "data: [DONE]\n\n"
             finally:
+                gone.set(); wt.cancel()
                 await g.aclose()
         return StreamingResponse(events(), media_type="text/event-stream")
     text, n, fin = "", 0, None
@@ -409,18 +432,20 @@ async def completions(req: Request):
     if body.get("stream"):
         async def events():
             g = run_job(ids, sp, stops)
+            gone, wt = watch_disconnect(req)
             sent, n, fin = 0, 0, None
             try:
                 async for text, n, fin in g:
                     if len(text) > sent:
                         yield sse(dict(base, choices=[{"index": 0, "text": text[sent:], "finish_reason": None}]))
                         sent = len(text)
-                    if fin is None and await req.is_disconnected():
+                    if fin is None and gone.is_set():
                         break
                 yield sse(dict(base, choices=[{"index": 0, "text": "", "finish_reason": (fin or {}).get("type", "stop")}],
                                usage={"prompt_tokens": P, "completion_tokens": n, "total_tokens": P + n}))
                 yield "data: [DONE]\n\n"
             finally:
+                gone.set(); wt.cancel()
                 await g.aclose()
         return StreamingResponse(events(), media_type="text/event-stream")
     text, n, fin = "", 0, None
