@@ -76,6 +76,14 @@ checkpoint; metric = top-1 agreement and mean KL over the reference top-20.
   (`data/triton_pin_exact.json`, `glm53/triton_pin.py`): a fresh container with an empty Triton cache compiles those
   configs and never benchmarks, and stays exact.
 
+## Known issues
+
+- `fast` mode decode is not exact (CPU tier, see Quality); fix in progress, will ship as a new digest.
+- After a long prompt (>= 8,192 tokens per chunk) the elastic cache gives 10.9 GB of slots back for prefill and
+  re-takes them empty, so the first tens of seconds of the following decode run at roughly half speed until the cache
+  re-warms (measured: 14.4 tok/s over the first 30 s after a 93k-token prompt, 27.6 tok/s over the whole answer).
+- `fast` mode keeps two copies of the experts in RAM (~235 GB); a single-copy fast mode (~170 GB) is in progress.
+
 ## Host requirements
 
 | | requirement | measured on |
@@ -88,7 +96,7 @@ checkpoint; metric = top-1 agreement and mean KL over the reference top-20.
 | CPU, `fast` | x86-64 with **AVX2 + FMA + F16C**; ~24 physical cores; decode speed scales with cores x per-core decode throughput (~3.6 GB/s per core under all-core load) | EPYC 7443P 24C |
 | memory bandwidth | 8-channel DDR4 (or better) recommended: the CPU tier streams ~80 GB/s while PCIe reads ~25 GB/s from the same DRAM (measured 136 GB/s read at 22 threads) | 8ch DDR4 |
 | disk | 117 GiB (125.3 GB) checkpoint, NVMe recommended (load 103-113 s from page cache) | 990 PRO |
-| limits | `--ulimit memlock=-1` (pinned host memory) | |
+| limits | `--ulimit memlock=-1` recommended (pinned host memory; the image also loaded without it, driver 610.57) | |
 
 ## Run
 
@@ -156,9 +164,20 @@ The published image is tested on the measured host exactly as in [Run](#run) (cl
 network, model mounted at `/models`): health, chat, tool call, the teacher-forced panel and the P2 sweep. Results are
 recorded here per digest.
 
-| digest | panel top-1 / KL | prefill 8k / 32k | decode C1 / C2 / C4 (aggregate) | C1 at 32k |
-|---|---|---|---|---|
-| pending | | | | |
+| digest | panel top-1 / KL | prefill 8k / 32k | decode C1 / C2 / C4 (aggregate) | C1 at 32k | ready after |
+|---|---|---|---|---|---|
+| `1159044a` (repo `c4b9160`, fast mode) | 1.0000 / 0 (2,154 positions) | 707 / 953 tok/s | 29.03 / 31.38 / 34.88 tok/s | 27.85 tok/s | 141 s |
+
+Run P001, 2026-10-01, RTX 3090 (GPU 1 of the measured host), anonymous `docker pull` of the digest, then the README
+command on a bridge network; every number within 5 % of the campaign's G067 (710 / 951, 28.15 / 31.57 / 33.98,
+26.89). Chat, no-thinking chat, streaming and an OpenAI tool call answered correctly. MemAvailable fell by 221.4 GiB
+(237.7 GB) at its lowest; VRAM at ready 22.7 GiB. A second start **without** `--ulimit memlock=-1` (the registry
+launch form) also loaded and served, so the flag is recommended but not required with this driver. The
+local-ai-registry lab gates on that start: load, chat, reasoning, tools and context (93,437-token prompt, needle
+found) pass; the speed gate measured 14.4 tok/s over its first 30 s window because it ran right after the 93k-token
+context gate: a long prefill hands 10.9 GB of expert-cache slots back for activations and re-takes them empty, so
+decode runs slower until the cache has re-warmed (the same answer averaged 27.6 tok/s over its 4,453 tokens). Raw files:
+[`results/P001-image-smoke/`](results/P001-image-smoke/).
 
 ## Configuration
 
@@ -242,7 +261,7 @@ docker/                 Dockerfile (local build), entrypoint.sh
 scripts/install.sh      pre-build the extensions
 bench/                  sweep.py (speed protocol), score_ref_panel.py (quality), decode_kl.py (paired CPU-tier decode check)
 reference/              exllamav3 reference panel for GLM-5.3-Flash 3.05bpw
-results/                raw JSONs of the measured runs (G067, C056, G066a, C052e)
+results/                raw JSONs of the measured runs (G067, C056, G066a, C052e) and of the image smoke (P001)
 ```
 
 Updating the image: a fix here is a new commit; the image build in
