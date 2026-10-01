@@ -12,8 +12,8 @@ Two modes, one switch (`GLM53_MODE`):
 
 | mode | what runs | quality vs stock exllamav3 | host RAM |
 |---|---|---|---|
-| `fast` (default) | GPU expert cache + zero-copy misses + **AVX2 CPU tier** for cold decode misses, batched decode (`-ambs 4`), fused decode kernels | prefill exact; decode **not exact** (see Quality) | ~213-218 GiB |
-| `exact` (`-e GLM53_MODE=exact`) | GPU expert cache + zero-copy misses, nothing else | bit-exact (panel top-1 1.0000, KL 0) | ~111 GiB |
+| `fast` (default) | GPU expert cache + zero-copy misses + **AVX2 CPU tier** for cold decode misses, batched decode (`-ambs 4`), fused decode kernels | prefill exact; decode **not exact** (see Quality) | ~218 GiB (234 GB) |
+| `exact` (`-e GLM53_MODE=exact`) | GPU expert cache + zero-copy misses, nothing else | bit-exact (panel top-1 1.0000, KL 0) | ~111 GiB (119 GB) |
 
 ## Measured
 
@@ -83,8 +83,8 @@ checkpoint; metric = top-1 agreement and mean KL over the reference top-20.
 | GPU | 1x NVIDIA 24 GB, sm_86 (RTX 3090 / A5000 class). sm_86 binaries also run on sm_89 (RTX 4090), not measured. Blackwell (sm_120) needs a rebuild with `TORCH_CUDA_ARCH_LIST="8.6;12.0"`, not measured | RTX 3090, driver 610.57 |
 | driver | CUDA 13.0 capable (the base image is CUDA 13.0.3) | 610.57 |
 | PCIe | 4.0 x16 recommended; cache misses are read over the link (~25 GB/s) | 4.0 x16 |
-| host RAM, `fast` | **~218 GiB for the process**: pinned home copy of all routed experts (42 x 288 x 9.44 MB = 114.2 GB) + the CPU tier's block-contiguous copy (114.2 GB). Measured MemAvailable drop from start to ready: 213.2 GiB (G067), 218.3 GiB (C056); process RSS 216.9 GiB. 256 GiB total is the bare minimum with nothing else running; 320 GB+ recommended. With `--memory`, allow at least 230g (the campaign used 250g) | 503 GiB |
-| host RAM, `exact` | ~111 GiB (measured drop 111.1 GiB, G066a); 128 GiB total is the minimum, 160 GB+ recommended | |
+| host RAM, `fast` | **~218 GiB (~234 GB) for the process today**: pinned home copy of all routed experts (42 x 288 x 9.44 MB = 114.2 GB) + the CPU tier's block-contiguous second copy (114.2 GB). Measured MemAvailable drop from start to ready: 213.2 GiB / 228.9 GB (G067), 218.3 GiB / 234.4 GB (C056); process RSS 216.9 GiB. 256 GiB total is the bare minimum with nothing else running; 320 GB+ recommended. With `--memory`, allow at least 230g (the campaign used 250g). A single-copy fast mode (target ~170 GB) is in progress and will ship as a new image digest / env setting | 503 GiB |
+| host RAM, `exact` | **~111 GiB (~119 GB)**: the pinned home copy only (measured drop 111.1 GiB / 119.3 GB, G066a); 128 GiB total is the minimum, 160 GB+ recommended. This is the low-RAM option today | |
 | CPU, `fast` | x86-64 with **AVX2 + FMA + F16C**; ~24 physical cores; decode speed scales with cores x per-core decode throughput (~3.6 GB/s per core under all-core load) | EPYC 7443P 24C |
 | memory bandwidth | 8-channel DDR4 (or better) recommended: the CPU tier streams ~80 GB/s while PCIe reads ~25 GB/s from the same DRAM (measured 136 GB/s read at 22 threads) | 8ch DDR4 |
 | disk | 117 GiB (125.3 GB) checkpoint, NVMe recommended (load 103-113 s from page cache) | 990 PRO |
@@ -170,6 +170,7 @@ recorded here per digest.
 | `GLM53_CPU_TIER` | `1` / `0` | AVX2 CPU tier for cold decode misses |
 | `GLM53_CT_CPUS` | `auto` | CPUs for the CPU tier pool; `auto` = one logical CPU per physical core, minus the first 2 cores (left to the Python thread that drives the GPU and the OS); explicit list like `2-23` |
 | `GLM53_CT_THREADS` | number of `GLM53_CT_CPUS` | CPU tier threads (one per listed CPU) |
+| `GLM53_CT_SWZ` | `1` | `1` = the CPU tier reads its own block-contiguous copy of the experts (+114.2 GB RAM, the measured setup); `0` = it reads the pinned home copy in the native layout (single copy, ~120 GiB total, but ~40 % slower per CPU expert in the kernel benchmark; not measured end to end) |
 | `GLM53_CT_A`, `GLM53_CT_B`, `GLM53_CT_TZC` | `0.11`, `0.104`, `0.40` (ms) | cost model: CPU job = A + B x experts; one zero-copy miss = TZC on the GPU |
 | `GLM53_EC_RESERVE_GB` | `1.5` / `1.0` | VRAM left free after the expert cache takes the rest |
 | `GLM53_EC_STAGE_GB` | `2.6` | prefill staging buffer size (2 buffers, overlap copy with compute) |

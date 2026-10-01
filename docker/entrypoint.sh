@@ -66,7 +66,7 @@ if [ "$GLM53_CPU_TIER" = "1" ]; then
     done
 fi
 AVAIL_GB=$(awk '/MemAvailable/{printf "%d", $2/1048576}' /proc/meminfo)
-NEED_GB=$([ "$GLM53_CPU_TIER" = "1" ] && echo 222 || echo 114)
+NEED_GB=$([ "$GLM53_CPU_TIER" = "1" ] && [ "${GLM53_CT_SWZ:-1}" != "0" ] && echo 222 || echo 114)   # second (CPU-layout) expert copy or not
 if [ -r /sys/fs/cgroup/memory.max ] && [ "$(cat /sys/fs/cgroup/memory.max)" != "max" ]; then
     LIM_GB=$(( $(cat /sys/fs/cgroup/memory.max) / 1073741824 ))
     [ "$LIM_GB" -ge "$NEED_GB" ] || die "container memory limit ${LIM_GB} GiB < ~${NEED_GB} GiB needed (raise --memory or use -e GLM53_MODE=exact)"
