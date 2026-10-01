@@ -5,7 +5,10 @@
 set -euo pipefail
 ROOT=${GLM53_ROOT:-/opt/glm53}
 
-if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then
+SCRIPT=glm53/serve.py
+if [ "${1:-}" = "decode-kl" ]; then   # paired decode-KL check (bench/decode_kl.py) with the serving config
+    SCRIPT=bench/decode_kl.py; shift
+elif [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then
     exec "$@"
 fi
 
@@ -90,5 +93,5 @@ ARGS=(-m "$MODEL" -cs 131072 --max-batch-size 8 -chunk_size 8192 "${MODE_ARGS[@]
       --served-name "${SERVED_NAME:-glm-5.3-flash}")
 # shellcheck disable=SC2206
 [ -n "${GLM53_ARGS:-}" ] && ARGS+=($GLM53_ARGS)
-log "serve.py ${ARGS[*]} $*"
-exec python3 "$ROOT/glm53/serve.py" "${ARGS[@]}" "$@"
+log "$SCRIPT ${ARGS[*]} $*"
+exec python3 "$ROOT/$SCRIPT" "${ARGS[@]}" "$@"

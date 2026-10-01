@@ -34,7 +34,7 @@ GLM53_K_OVL=1`.
 | - | - | 31.57 tok/s aggregate (15.78 per stream) | 2 | 131,072 tokens | 1 |
 | - | - | 33.98 tok/s aggregate (8.62 per stream) | 4 | 131,072 tokens | 1 |
 
-Earlier steps of the same configuration: C056 (staging 2.0 GB, no fused kernels) prefill 626 / 808, decode C1 27.20 /
+Raw sweep / panel JSONs for every table: [`results/`](results/). Earlier steps of the same configuration: C056 (staging 2.0 GB, no fused kernels) prefill 626 / 808, decode C1 27.20 /
 C2 30.72 / C4 34.72 aggregate, C1 at 32k 26.15; C052c (C056 without `-ambs 4`, streams then decode one after
 another) C1 27.32 / C2 27.06 / C4 27.45.
 
@@ -117,6 +117,39 @@ checkpoint's vision tower is not loaded). Requests are not capped: `max_tokens` 
 
 Without Docker: exllamav3 1.5.1 built for your GPU, then `scripts/install.sh` (builds the extensions) and `docker/entrypoint.sh` with `GLM53_ROOT=$PWD GLM53_MODEL_DIR=/path/to/model`.
 
+## Reproduce
+
+Everything the numbers depend on, pinned:
+
+| piece | pin |
+|---|---|
+| model | `turboderp/GLM-5.3-Flash-exl3`, branch `3.05bpw`, revision `332ab457b709b7ba30dd9a448be5de03b80a7ac9` (125.3 GB) |
+| image | `ghcr.io/0xsero/glm53-flash-offload@sha256:<digest>` (see [Image smoke](#image-smoke)), built by [0xSero/local-ai-images](https://github.com/0xSero/local-ai-images) `glm53-flash-offload/Dockerfile` |
+| base | `lmsysorg/sglang@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f` (v0.5.20, SGLang commit 94602c9; CUDA 13.0.3, torch 2.13.0+cu130, Triton 3.7.1, transformers 5.12.1) |
+| exllamav3 | v1.5.1 = commit `958ec933361b24eb8426ec7222e5b0062a679dcd`, built with `TORCH_CUDA_ARCH_LIST=8.6` |
+| this repo | the commit the image's `GLM53_COMMIT` names (also in `/opt/glm53/COMMIT` inside the image) |
+| Triton picks | `data/triton_pin_exact.json` (7 FLA/KDA kernels) |
+| host | AMD EPYC 7443P 24 cores (AVX2, no AVX-512), 8-channel DDR4 503 GiB (136-140 GB/s measured read), RTX 3090 24 GB PCIe 4.0 x16 (~25 GB/s host-to-device), Samsung 990 PRO 4 TB NVMe, NVIDIA driver 610.57.04, Linux 7.2 |
+
+Run the server as in [Run](#run), then from a clone of this repo (Python 3, standard library only):
+
+```bash
+# quality: teacher-forced panel vs the exllamav3 reference (expect top-1 1.0000, KL 0 in both modes)
+python3 bench/score_ref_panel.py --url http://127.0.0.1:30000 --panel reference/glm-5.3-flash-exl3-ref-panel.json --out score.json
+# speed: the protocol behind every table here (P2)
+python3 bench/sweep.py --url http://127.0.0.1:30000 --card rtx-3090-24gb/glm-5.3-flash-offload --template glm \
+  --config "<digest> fast" --prefill 8192 32768 --conc 1 2 4 --reps 3 --dec-reps 2 --no-early-exit --out sweep.json
+# decode quality of the CPU tier: paired tier-off / tier-on decode in one process (stop the server first; ~20 min)
+docker run --rm --gpus '"device=0"' --ulimit memlock=-1 --shm-size 16g -v <model dir>:/models -v $PWD:/out \
+  ghcr.io/0xsero/glm53-flash-offload@sha256:<digest> decode-kl --kl-out /out/decode_kl.json
+```
+
+`results/` holds the raw outputs of the campaign runs behind the tables: `G067/` (shipped `fast` defaults), `C056/`
+(previous fast config), `G066a/` (`exact` mode) with `sweep.json`, `score.json`, `server_info.json`, the launch
+(`launch.txt`: argv + env; `/w` was this repo mounted in the campaign container) and MemAvailable / VRAM at start and
+ready; `C052e/decode_kl.json` is the paired decode check. The reference panel (`reference/`) was produced by stock
+exllamav3 1.5.1 on the same checkpoint (8 prompts, top-20 logprobs at every position).
+
 ## Image smoke
 
 The published image is tested on the measured host exactly as in [Run](#run) (clean pull by digest, bridge
@@ -151,6 +184,21 @@ does that inside the container's cpuset (24 cores -> cpus 2-23, 22 threads). The
 PCIe uses `GLM53_CT_B` = ms per expert on the CPU at your thread count; it was measured at 22 threads, so for N
 threads set roughly `GLM53_CT_B = 0.104 x 22 / N` (e.g. 16 cores -> 14 threads -> 0.16). Fewer than ~12 cores: the
 split sends most misses back over PCIe and decode approaches `exact`-mode speed; there `exact` is the better choice.
+
+**Other GPUs.** The expert cache sizes itself from free VRAM after load (minus `GLM53_EC_RESERVE_GB`), so a 32 GB or
+48 GB card simply gets more slots (higher hit rate, faster decode); keep the reserve at 1.5 GB unless long prefills
+OOM. RTX 4090 (sm_89) runs the sm_86 build unchanged; Blackwell needs the image rebuilt with
+`--build-arg TORCH_CUDA_ARCH_LIST="8.6;12.0"`, and a new Triton pin may be needed there (`glm53/make_triton_pin.py`
+turns a Triton cache into a pin file; check the panel stays at 1.0000). A slower PCIe link (3.0, or 4.0 x8) costs
+decode speed roughly in proportion to the cache-miss traffic.
+
+## Registry and kit
+
+- local-ai-registry recipe: [`rtx-3090-24gb/glm-5.3-flash.exllamav3.128k`](https://github.com/0xSero/local-ai-registry/blob/main/registry/recipes/nvidia/rtx-3090-24gb/glm-5.3-flash.exllamav3.128k.json)
+  (launch `registry/launches/exllamav3-glm-5.3-flash-exl3-3.05bpw-offload-128k-rtx-3090-24gb.json`; candidate until
+  the CPU-tier decode fix lands)
+- local-ai-recipe-kit target: [`targets/glm-5.3-flash-offload.md`](https://github.com/0xSero/local-ai-recipe-kit/blob/main/targets/glm-5.3-flash-offload.md)
+  (submit your own measurements of this setup there)
 
 ## How it works
 
@@ -191,6 +239,9 @@ kernels/cpu_avx2/       ft_core.h (AVX2 kernels, pool), ft_tier_ext.cpp (host wo
 data/                   routing stats, exllamav3 MoE tune cache, Triton autotune pins
 docker/                 Dockerfile (local build), entrypoint.sh
 scripts/install.sh      pre-build the extensions
+bench/                  sweep.py (speed protocol), score_ref_panel.py (quality), decode_kl.py (paired CPU-tier decode check)
+reference/              exllamav3 reference panel for GLM-5.3-Flash 3.05bpw
+results/                raw JSONs of the measured runs (G067, C056, G066a, C052e)
 ```
 
 Updating the image: a fix here is a new commit; the image build in
