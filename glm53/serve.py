@@ -9,14 +9,15 @@ Offload stack (each piece is a monkeypatch around stock exllamav3, enabled by en
 
 Endpoints
   GET  /health, /v1/models, /server_info, /stats
-  POST /v1/chat/completions  (stream or not; chat_template_kwargs.enable_thinking; reasoning in reasoning_content)
+  POST /v1/chat/completions  (stream or not; tools -> tool_calls; chat_template_kwargs.enable_thinking /
+                             reasoning_effort; reasoning in reasoning_content)
   POST /v1/completions       (raw prompt, stream or not)
   POST /generate, /tokenize  (SGLang-shaped, used by the benchmark and quality tools; return_logprob = teacher-forced)
 No output caps: max_tokens defaults to the remaining context.
 
   python3 glm53/serve.py -m /models -cs 131072 --max-batch-size 8 -chunk_size 8192 -ambs 4 --host 0.0.0.0 --port 30000
 """
-import argparse, asyncio, json, os, sys, time, uuid
+import argparse, asyncio, json, os, re, sys, time, uuid
 import torch
 from exllamav3 import model_init
 from exllamav3.generator import AsyncGenerator, AsyncJob
@@ -90,18 +91,74 @@ def load():
     CTX = args.cache_size
 
 
-def chat_prompt(messages, enable_thinking=True):
+def normalize_messages(messages):
+    """OpenAI -> GLM template: assistant tool-call arguments as dicts, content never None."""
+    out = []
+    for m in messages:
+        m = dict(m)
+        if m.get("content") is None:
+            m["content"] = ""
+        if m.get("tool_calls"):
+            tcs = []
+            for tc in m["tool_calls"]:
+                tc = json.loads(json.dumps(tc))
+                fn = tc.get("function", tc)
+                if isinstance(fn.get("arguments"), str):
+                    try:
+                        fn["arguments"] = json.loads(fn["arguments"] or "{}")
+                    except ValueError:
+                        fn["arguments"] = {"arguments": fn["arguments"]}
+                tcs.append(tc)
+            m["tool_calls"] = tcs
+        out.append(m)
+    return out
+
+
+def chat_prompt(messages, enable_thinking=True, tools=None, template_kwargs=None):
     if hf_tok is not None and getattr(hf_tok, "chat_template", None):
-        p = hf_tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True,
-                                       enable_thinking=enable_thinking)
+        kw = dict(template_kwargs or {})
+        kw.pop("enable_thinking", None)
+        p = hf_tok.apply_chat_template(normalize_messages(messages), tools=tools or None, tokenize=False,
+                                       add_generation_prompt=True, enable_thinking=enable_thinking, **kw)
         # GLM-5.3's template ends the generation prompt with "<think>"; thinking off = empty think block
         if not enable_thinking and p.endswith("<think>"):
             p += "</think>"
         return p
     p = "[gMASK]<sop>"
     for m in messages:
-        p += f"<|{m['role']}|>{m['content']}"
+        p += f"<|{m['role']}|>{m.get('content') or ''}"
     return p + ("<|assistant|><think>" if enable_thinking else "<|assistant|><think></think>")
+
+
+TOOL_CALL = re.compile(r"<tool_call>(.*?)(?:</tool_call>|$)", re.S)
+TOOL_ARG = re.compile(r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>", re.S)
+
+
+def parse_tool_calls(content, tools):
+    """GLM-5.3 tool calls: <tool_call>name<arg_key>k</arg_key><arg_value>v</arg_value>...</tool_call>. String-typed
+    parameters (per the tool's JSON schema) stay raw text, everything else is parsed as JSON when it parses."""
+    if not tools or "<tool_call>" not in content:
+        return content, []
+    schema = {}
+    for t in tools:
+        fn = t.get("function", t)
+        schema[fn.get("name")] = (fn.get("parameters") or {}).get("properties") or {}
+    calls = []
+    for body in TOOL_CALL.findall(content):
+        name = body.split("<arg_key>", 1)[0].strip()
+        args = {}
+        for k, v in TOOL_ARG.findall(body):
+            k, v = k.strip(), v.strip()
+            if (schema.get(name, {}).get(k) or {}).get("type") == "string":
+                args[k] = v
+            else:
+                try:
+                    args[k] = json.loads(v)
+                except ValueError:
+                    args[k] = v
+        calls.append({"id": "call_" + uuid.uuid4().hex[:24], "type": "function",
+                      "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)}})
+    return TOOL_CALL.sub("", content).strip(), calls
 
 
 def make_sampler(sp):
@@ -253,29 +310,29 @@ def split_reasoning(text):
 @app.post("/v1/chat/completions")
 async def chat(req: Request):
     body = await req.json()
-    kw = body.get("chat_template_kwargs") or {}
+    kw = dict(body.get("chat_template_kwargs") or {})
+    if body.get("reasoning_effort") is not None:
+        kw.setdefault("reasoning_effort", body["reasoning_effort"])
     thinking = kw.get("enable_thinking", True)
-    ids = tok.encode(chat_prompt(body["messages"], enable_thinking=thinking), encode_special_tokens=True)
+    tools = body.get("tools") if body.get("tool_choice") != "none" else None
+    ids = tok.encode(chat_prompt(body["messages"], thinking, tools, kw), encode_special_tokens=True)
     sp, stops = openai_sp(body), stops_of(body)
     cid, created, P = "chatcmpl-" + uuid.uuid4().hex[:24], int(time.time()), ids.shape[-1]
     if body.get("stream"):
         async def events():
             g = run_job(ids, sp, stops)
-            sent, in_think = 0, thinking
+            sent, in_think, held = 0, thinking, ""
             base = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": args.served_name}
             yield sse(dict(base, choices=[{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}]))
             n, fin = 0, None
             try:
                 async for text, n, fin in g:
                     new = text[sent:]
-                    # hold back a possible partial "</think>" at the end of the text
-                    hold = 0
-                    if in_think:
+                    hold = 0   # hold back a possible partial "</think>" at the end of the text
+                    if in_think and fin is None:
                         for k in range(min(len("</think>") - 1, len(new)), 0, -1):
                             if "</think>".startswith(new[-k:]):
                                 hold = k; break
-                    if fin is not None:
-                        hold = 0
                     new = new[:len(new) - hold] if hold else new
                     sent += len(new)
                     while new:
@@ -286,13 +343,24 @@ async def chat(req: Request):
                             if not sep:
                                 break
                             in_think, new = False, rest
+                        elif tools:   # tool calls are parsed from the whole answer at the end
+                            held += new
+                            break
                         else:
                             yield sse(dict(base, choices=[{"index": 0, "delta": {"content": new}, "finish_reason": None}]))
                             break
                     if fin is None and await req.is_disconnected():
                         break
+                reason = (fin or {}).get("type", "stop")
+                if tools:
+                    content, calls = parse_tool_calls(held, tools)
+                    if content:
+                        yield sse(dict(base, choices=[{"index": 0, "delta": {"content": content}, "finish_reason": None}]))
+                    if calls:
+                        reason = "tool_calls"
+                        yield sse(dict(base, choices=[{"index": 0, "delta": {"tool_calls": [dict(c, index=i) for i, c in enumerate(calls)]}, "finish_reason": None}]))
                 usage = {"prompt_tokens": P, "completion_tokens": n, "total_tokens": P + n}
-                yield sse(dict(base, choices=[{"index": 0, "delta": {}, "finish_reason": (fin or {}).get("type", "stop")}], usage=usage))
+                yield sse(dict(base, choices=[{"index": 0, "delta": {}, "finish_reason": reason}], usage=usage))
                 yield "data: [DONE]\n\n"
             finally:
                 await g.aclose()
@@ -306,10 +374,13 @@ async def chat(req: Request):
             reasoning, content = text.replace("<think>", "").strip(), ""
     else:
         reasoning, content = None, text.strip()
+    content, calls = parse_tool_calls(content, tools)
+    msg = {"role": "assistant", "content": content, "reasoning_content": reasoning}
+    if calls:
+        msg["tool_calls"] = calls
     return JSONResponse({"id": cid, "object": "chat.completion", "created": created, "model": args.served_name,
-                         "choices": [{"index": 0, "finish_reason": (fin or {}).get("type"),
-                                      "message": {"role": "assistant", "content": content,
-                                                  "reasoning_content": reasoning}}],
+                         "choices": [{"index": 0, "message": msg,
+                                      "finish_reason": "tool_calls" if calls else (fin or {}).get("type")}],
                          "usage": {"prompt_tokens": P, "completion_tokens": n, "total_tokens": P + n}})
 
 

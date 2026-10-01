@@ -102,10 +102,11 @@ curl -s localhost:30000/v1/chat/completions -H 'content-type: application/json' 
 Exact mode: add `-e GLM53_MODE=exact`. Extra arguments after the image name are appended to the server command
 (the last value wins), e.g. `... IMAGE -cs 65536` for a 64k KV cache (more expert-cache slots).
 
-Endpoints: `/v1/chat/completions` (stream or not; reasoning in `reasoning_content`; disable thinking with
+Endpoints: `/v1/chat/completions` (stream or not; `tools` -> OpenAI `tool_calls`, parsed from GLM's
+`<tool_call>` format; reasoning in `reasoning_content`; disable thinking with
 `"chat_template_kwargs": {"enable_thinking": false}`), `/v1/completions`, `/v1/models`, `/health`, `/stats` (cache
-hit rate, CPU tier counters), `/server_info`, and SGLang-shaped `/generate` + `/tokenize`. No tool-call parsing.
-Requests are not capped: `max_tokens` defaults to the remaining context.
+hit rate, CPU tier counters), `/server_info`, and SGLang-shaped `/generate` + `/tokenize`. Text only (the
+checkpoint's vision tower is not loaded). Requests are not capped: `max_tokens` defaults to the remaining context.
 
 Without Docker: exllamav3 1.5.1 built for your GPU, then `scripts/install.sh` (unpacks the Triton cache, builds the
 extensions) and `docker/entrypoint.sh` with `GLM53_ROOT=$PWD GLM53_MODEL_DIR=/path/to/model`.
