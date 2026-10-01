@@ -200,9 +200,25 @@
     ],
     {
      "kwargs": {
-      "BT": 16
+      "BT": 8
      },
-     "num_warps": 4,
+     "num_warps": 1,
+     "num_stages": 3
+    }
+   ],
+   [
+    [
+     128,
+     4,
+     "torch.bfloat16",
+     "torch.bfloat16",
+     "torch.float32"
+    ],
+    {
+     "kwargs": {
+      "BT": 32
+     },
+     "num_warps": 2,
      "num_stages": 3
     }
    ],
@@ -216,7 +232,7 @@
     ],
     {
      "kwargs": {
-      "BT": 32
+      "BT": 16
      },
      "num_warps": 2,
      "num_stages": 3
@@ -225,7 +241,7 @@
   ],
   "default": {
    "kwargs": {
-    "BT": 32
+    "BT": 16
    },
    "num_warps": 2,
    "num_stages": 3
@@ -251,7 +267,7 @@
       "BV": 128
      },
      "num_warps": 4,
-     "num_stages": 3
+     "num_stages": 2
     }
    ]
   ],
@@ -261,7 +277,7 @@
     "BV": 128
    },
    "num_warps": 4,
-   "num_stages": 3
+   "num_stages": 2
   }
  }
 }

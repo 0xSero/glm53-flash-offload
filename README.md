@@ -5,40 +5,41 @@ plus host DDR4, with an OpenAI-compatible API. All routed experts live in pinned
 cache of hot experts, reads the rest over PCIe (zero-copy), and an AVX2 CPU kernel computes the coldest cache misses
 during decode on the host cores.
 
-It is a thin layer of monkeypatches over **stock exllamav3 1.5.1** (no exllamav3 source edits) plus two small
-custom extensions. This is the exact code and configuration of run C056 of the FreeToken-EXL3 campaign.
+It is a thin layer of monkeypatches over **stock exllamav3 1.5.1** (no exllamav3 source edits) plus a few small
+custom kernels. This is the exact code and configuration of run G067 of the FreeToken-EXL3 campaign.
 
 Two modes, one switch (`GLM53_MODE`):
 
-| mode | what runs | decode quality vs stock exllamav3 | host RAM |
+| mode | what runs | quality vs stock exllamav3 | host RAM |
 |---|---|---|---|
-| `fast` (default) | GPU expert cache + zero-copy misses + **AVX2 CPU tier** for cold misses, batched decode (`-ambs 4`) | prefill exact; decode **not exact** (see Quality) | ~218 GiB |
-| `exact` | GPU expert cache + zero-copy misses, no CPU tier | bit-exact (panel top-1 1.0000, KL 0) | ~111 GiB |
+| `fast` (default) | GPU expert cache + zero-copy misses + **AVX2 CPU tier** for cold decode misses, batched decode (`-ambs 4`), fused decode kernels | prefill exact; decode **not exact** (see Quality) | ~213-218 GiB |
+| `exact` (`-e GLM53_MODE=exact`) | GPU expert cache + zero-copy misses, nothing else | bit-exact (panel top-1 1.0000, KL 0) | ~111 GiB |
 
 ## Measured
 
 Host: AMD EPYC 7443P (24 cores, SMT on), 8-channel DDR4 (503 GiB), 1x RTX 3090 24 GB on PCIe 4.0 x16, driver
-610.57, Samsung 990 PRO NVMe. Image stack: lmsysorg/sglang v0.5.20 (CUDA 13.0) + exllamav3 v1.5.1 built for sm_86.
+610.57, Samsung 990 PRO NVMe. Stack: lmsysorg/sglang v0.5.20 (CUDA 13.0) + exllamav3 v1.5.1 built for sm_86.
 Protocol (campaign `sweep.py --template glm --prefill 8192 32768 --conc 1 2 4 --reps 3 --dec-reps 2`): prefill =
 median of 3 fresh random-token prompts, tokens / time-to-first-token; decode = greedy chat completions run to their
 natural end, C simultaneous streams, aggregate = all completion tokens / wall time, median of 2 rounds.
 
-**`fast` mode (C056)**: `-cs 131072 --max-batch-size 8 -chunk_size 8192 -ambs 4`, cache reserve 1.5 GB, staging
-2 x 2.0 GB, elastic 10 GB, CPU tier on 22 threads (cpus 2-23).
+**`fast` mode (G067)**: `-cs 131072 --max-batch-size 8 -chunk_size 8192 -ambs 4`; expert cache reserve 1.5 GB,
+prefill staging 2 x 2.6 GB, elastic 10 GB; CPU tier on 22 threads (cpus 2-23); `GLM53_K_HCFUSE=1 GLM53_K_FTSPLIT=1
+GLM53_K_OVL=1`.
 
 | prefill size | prefill speed | decode speed | concurrency | kv cache | gpu count |
 |---|---|---|---|---|---|
-| 8,192 | 626 tok/s | 27.20 tok/s | 1 | 131,072 tokens | 1 |
-| 32,768 | 808 tok/s | 26.15 tok/s (C1 at 32k context) | 1 | 131,072 tokens | 1 |
-| - | - | 30.72 tok/s aggregate (15.43 per stream) | 2 | 131,072 tokens | 1 |
-| - | - | 34.72 tok/s aggregate (8.71 per stream) | 4 | 131,072 tokens | 1 |
+| 8,192 | 710 tok/s | 28.15 tok/s | 1 | 131,072 tokens | 1 |
+| 32,768 | 951 tok/s | 26.89 tok/s (C1 at 32k context) | 1 | 131,072 tokens | 1 |
+| - | - | 31.57 tok/s aggregate (15.78 per stream) | 2 | 131,072 tokens | 1 |
+| - | - | 33.98 tok/s aggregate (8.62 per stream) | 4 | 131,072 tokens | 1 |
 
-Same configuration without `-ambs 4` (C052c): prefill 629 / 812, decode C1 27.32, C2 27.06, C4 27.45 aggregate
-(the generator then runs streams one after another), C1 at 32k 26.45.
+Earlier steps of the same configuration: C056 (staging 2.0 GB, no fused kernels) prefill 626 / 808, decode C1 27.20 /
+C2 30.72 / C4 34.72 aggregate, C1 at 32k 26.15; C052c (C056 without `-ambs 4`, streams then decode one after
+another) C1 27.32 / C2 27.06 / C4 27.45.
 
-**`exact` mode (G066a)**: `-cs 131072 --max-batch-size 8 -chunk_size 8192`, cache reserve 1.0 GB, staging 2 x 2.6 GB,
-elastic 10 GB, no CPU tier. (G066a ran with the campaign's reference Triton cache; the image pins the C056 pick set,
-whose prefill path measured the same top-1 1.0000 / KL 0.)
+**`exact` mode (G066a)**: `-cs 131072 --max-batch-size 8 -chunk_size 8192`; reserve 1.0 GB, staging 2 x 2.6 GB,
+elastic 10 GB; no CPU tier, no fused kernels.
 
 | prefill size | prefill speed | decode speed | concurrency | kv cache | gpu count |
 |---|---|---|---|---|---|
@@ -50,24 +51,30 @@ whose prefill path measured the same top-1 1.0000 / KL 0.)
 For reference, stock exllamav3 with the experts it cannot fit in VRAM on its CPU worker decodes this model at
 7.5-8.4 tok/s on the same box.
 
+Published image smoke test (the README command on the measured host): see [Image smoke](#image-smoke).
+
 ## Quality
 
 Reference: a teacher-forced panel (8 prompts, 2,154 scored positions) from stock exllamav3 1.5.1 on the same
 checkpoint; metric = top-1 agreement and mean KL over the reference top-20.
 
-- **Prefill / teacher-forced path, both modes: top-1 1.0000, KL 0** (C056, C052c, G066a, G060a). The expert cache,
-  zero-copy reads and prefill staging only change *where* the bytes are read from; the arithmetic is exllamav3's own
-  kernels. The CPU tier is off for forwards larger than 4 tokens, so the panel does not exercise it.
-- **Decode with the CPU tier (`fast` mode) is not exact.** Paired check (C052e, same process, same token sequence,
-  tier off vs on, 6 prompts, 1,288 decode positions): **mean KL 0.0053 (p99 0.086), top-1 agreement 0.977** vs the
-  exact GPU-only path. An earlier paired run (C052d) gave top-1 0.9837 on the same positions. The CPU kernel itself
-  measures ~1e-3 relative RMS error per expert vs an fp64 reference (startup self-test: EXACT 9.9e-4, AFFINE 1.05e-3,
-  I16 1.05e-3), the same class as exllamav3's own fused GPU MoE kernel (1.1e-3), which by itself would predict a much
-  smaller KL; a decode-path bug (handoff / masking / combine) is suspected and being diagnosed. A fixed CPU tier ships
-  as a new image digest; until then, use `GLM53_MODE=exact` when you need outputs identical to exllamav3.
+- **Prefill / teacher-forced path, both modes: top-1 1.0000, KL 0** (G067, C056, G066a). The expert cache, zero-copy
+  reads and prefill staging only change *where* the bytes are read from; the arithmetic is exllamav3's own kernels.
+  The CPU tier and the side-stream shared expert are only active for decode batches (<= 4 / <= 8 tokens), so the
+  panel does not exercise them.
+- **Decode in `fast` mode is not exact.** Paired check (C052e, same process, same token sequence, CPU tier off vs
+  on, 6 prompts, 1,288 decode positions): **mean KL 0.0053 (p99 0.086), top-1 agreement 0.977** vs the exact
+  GPU-only path (an earlier paired run, C052d: top-1 0.9837). The CPU kernel itself measures ~1e-3 relative RMS error
+  per expert vs an fp64 reference (startup self-test: EXACT 9.9e-4, AFFINE 1.05e-3, I16 1.05e-3), the same class as
+  exllamav3's own fused GPU MoE kernel (1.1e-3), which alone would predict a much smaller KL; a decode-path bug
+  (handoff / masking / combine) is suspected and being diagnosed. `GLM53_K_OVL=1` (shared expert on a side stream)
+  is also not bitwise (~2e-3 relative per layer output, the same as exllamav3's non-fused shared-expert path).
+  `GLM53_K_HCFUSE` and `GLM53_K_FTSPLIT` are bit-identical to the kernels they replace. A fixed CPU tier ships as a
+  new image digest; until then use `GLM53_MODE=exact` when outputs must match exllamav3.
 - The Triton autotune picks of the KDA (linear attention) prefill kernels change rounding: a different pick set
-  measured top-1 0.989 / KL 0.0034 on the same panel. The image ships the measured run's Triton cache and pins its
-  picks (`data/triton_pin_c056.json`, `glm53/triton_pin.py`), so a fresh container does not re-benchmark.
+  measured top-1 0.989 / KL 0.0034 on the same panel. The image pins the reference pick set
+  (`data/triton_pin_exact.json`, `glm53/triton_pin.py`): a fresh container with an empty Triton cache compiles those
+  configs and never benchmarks, and stays exact.
 
 ## Host requirements
 
@@ -76,7 +83,7 @@ checkpoint; metric = top-1 agreement and mean KL over the reference top-20.
 | GPU | 1x NVIDIA 24 GB, sm_86 (RTX 3090 / A5000 class). sm_86 binaries also run on sm_89 (RTX 4090), not measured. Blackwell (sm_120) needs a rebuild with `TORCH_CUDA_ARCH_LIST="8.6;12.0"`, not measured | RTX 3090, driver 610.57 |
 | driver | CUDA 13.0 capable (the base image is CUDA 13.0.3) | 610.57 |
 | PCIe | 4.0 x16 recommended; cache misses are read over the link (~25 GB/s) | 4.0 x16 |
-| host RAM, `fast` | **~218 GiB for the process**: pinned home copy of all routed experts (42 x 288 x 9.44 MB = 114.2 GB) + the CPU tier's block-contiguous copy (114.2 GB). Measured MemAvailable drop from start to ready: 218.3 GiB (C056), process RSS 216.9 GiB. 256 GiB total is the bare minimum with nothing else running; 320 GB+ recommended. With `--memory`, allow at least 230g (the campaign used 250g) | 503 GiB |
+| host RAM, `fast` | **~218 GiB for the process**: pinned home copy of all routed experts (42 x 288 x 9.44 MB = 114.2 GB) + the CPU tier's block-contiguous copy (114.2 GB). Measured MemAvailable drop from start to ready: 213.2 GiB (G067), 218.3 GiB (C056); process RSS 216.9 GiB. 256 GiB total is the bare minimum with nothing else running; 320 GB+ recommended. With `--memory`, allow at least 230g (the campaign used 250g) | 503 GiB |
 | host RAM, `exact` | ~111 GiB (measured drop 111.1 GiB, G066a); 128 GiB total is the minimum, 160 GB+ recommended | |
 | CPU, `fast` | x86-64 with **AVX2 + FMA + F16C**; ~24 physical cores; decode speed scales with cores x per-core decode throughput (~3.6 GB/s per core under all-core load) | EPYC 7443P 24C |
 | memory bandwidth | 8-channel DDR4 (or better) recommended: the CPU tier streams ~80 GB/s while PCIe reads ~25 GB/s from the same DRAM (measured 136 GB/s read at 22 threads) | 8ch DDR4 |
@@ -108,14 +115,23 @@ Endpoints: `/v1/chat/completions` (stream or not; `tools` -> OpenAI `tool_calls`
 hit rate, CPU tier counters), `/server_info`, and SGLang-shaped `/generate` + `/tokenize`. Text only (the
 checkpoint's vision tower is not loaded). Requests are not capped: `max_tokens` defaults to the remaining context.
 
-Without Docker: exllamav3 1.5.1 built for your GPU, then `scripts/install.sh` (unpacks the Triton cache, builds the
-extensions) and `docker/entrypoint.sh` with `GLM53_ROOT=$PWD GLM53_MODEL_DIR=/path/to/model`.
+Without Docker: exllamav3 1.5.1 built for your GPU, then `scripts/install.sh` (builds the extensions) and `docker/entrypoint.sh` with `GLM53_ROOT=$PWD GLM53_MODEL_DIR=/path/to/model`.
+
+## Image smoke
+
+The published image is tested on the measured host exactly as in [Run](#run) (clean pull by digest, bridge
+network, model mounted at `/models`): health, chat, tool call, the teacher-forced panel and the P2 sweep. Results are
+recorded here per digest.
+
+| digest | panel top-1 / KL | prefill 8k / 32k | decode C1 / C2 / C4 (aggregate) | C1 at 32k |
+|---|---|---|---|---|
+| pending | | | | |
 
 ## Configuration
 
 | env | default (`fast` / `exact`) | meaning |
 |---|---|---|
-| `GLM53_MODE` | `fast` | `fast` = C056 defaults, `exact` = G066a defaults |
+| `GLM53_MODE` | `fast` | `fast` = G067 defaults, `exact` = G066a defaults |
 | `GLM53_MODEL_DIR` | `/models` | checkpoint directory; downloaded there if `config.json` is missing |
 | `GLM53_MODEL_REPO` / `GLM53_MODEL_REVISION` | `turboderp/GLM-5.3-Flash-exl3` / `332ab457...` (branch 3.05bpw) | download source |
 | `GLM53_CPU_TIER` | `1` / `0` | AVX2 CPU tier for cold decode misses |
@@ -123,9 +139,10 @@ extensions) and `docker/entrypoint.sh` with `GLM53_ROOT=$PWD GLM53_MODEL_DIR=/pa
 | `GLM53_CT_THREADS` | number of `GLM53_CT_CPUS` | CPU tier threads (one per listed CPU) |
 | `GLM53_CT_A`, `GLM53_CT_B`, `GLM53_CT_TZC` | `0.11`, `0.104`, `0.40` (ms) | cost model: CPU job = A + B x experts; one zero-copy miss = TZC on the GPU |
 | `GLM53_EC_RESERVE_GB` | `1.5` / `1.0` | VRAM left free after the expert cache takes the rest |
-| `GLM53_EC_STAGE_GB` | `2.0` / `2.6` | prefill staging buffer size (2 buffers, overlap copy with compute) |
+| `GLM53_EC_STAGE_GB` | `2.6` | prefill staging buffer size (2 buffers, overlap copy with compute) |
+| `GLM53_K_HCFUSE`, `GLM53_K_FTSPLIT`, `GLM53_K_OVL` | `1` / `0` | fused hyper-connection decode sites; fast CPU-tier split kernel; shared expert on a side stream |
 | `GLM53_EC_ELASTIC_GB` | `10` | cache memory handed back for prefill activations and staging, re-taken for decode |
-| `GLM53_TRITON_PIN` | `data/triton_pin_c056.json` | fixed KDA autotune picks (empty = autotune) |
+| `GLM53_TRITON_PIN` | `data/triton_pin_exact.json` | fixed KDA autotune picks (empty = autotune) |
 | `PORT`, `SERVED_NAME`, `GLM53_ARGS` | `30000`, `glm-5.3-flash`, empty | server port, model id, extra args |
 
 **Sizing the CPU tier for another CPU.** The tier is limited by per-core decode throughput, not DRAM (SMT, prefetch
@@ -155,6 +172,9 @@ split sends most misses back over PCIe and decode approaches `exact`-mode speed;
   picks from its own MoE and adds the CPU's fp32 partial back after its experts (device-side flag wait, no host sync).
 - **Batched decode**: `-ambs 4` gives the recurrent (KDA) cache 4 slots so up to 4 streams decode in one step and
   share the per-layer expert union.
+- **Decode kernels** (`fast` mode): the 4 launches of each mHC hyper-connection site fused into 2 (`k_hcfuse.py`,
+  bit-exact), a faster CPU-tier split kernel (`kernels/k110/`, bit-identical), and the shared expert moved out of the
+  fused MoE kernel onto a side stream so it overlaps the PCIe miss gather and the CPU wait (`k_overlap.py`).
 
 ## Layout
 
@@ -164,10 +184,13 @@ glm53/exl3_tiers.py     pinned zero-copy home copy of all routed experts
 glm53/expert_cache.py   elastic CLOCK GPU expert cache + prefill staging (CUDA source inline)
 glm53/cpu_tier.py       CPU tier wiring, cost-model policy, self-test, auto CPU sizing
 glm53/triton_pin.py     Triton autotune pinning for the KDA kernels (+ make_triton_pin.py)
+glm53/k_hcfuse.py       fused hyper-connection decode sites (CUDA source inline)
+glm53/k_ftsplit.py      fast CPU-tier split kernel loader (kernels/k110/ft_split_fast.cu)
+glm53/k_overlap.py      shared expert on a side stream in decode
 kernels/cpu_avx2/       ft_core.h (AVX2 kernels, pool), ft_tier_ext.cpp (host worker), ft_tier_cu.cu (GPU split/combine)
-data/                   routing stats, exllamav3 MoE tune cache, Triton cache + pins of the measured run
+data/                   routing stats, exllamav3 MoE tune cache, Triton autotune pins
 docker/                 Dockerfile (local build), entrypoint.sh
-scripts/install.sh      unpack Triton cache, pre-build extensions
+scripts/install.sh      pre-build the extensions
 ```
 
 Updating the image: a fix here is a new commit; the image build in

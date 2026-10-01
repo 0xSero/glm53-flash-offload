@@ -3,7 +3,7 @@ reproduces a reference pick set instead of benchmarking (autotune picks are timi
 change the rounding of the KDA prefill: on the teacher-forced panel a different pick set measured top-1 0.989 /
 KL 0.0034 vs 1.0000 / 0 for the reference set).
 
-  GLM53_TRITON_PIN=data/triton_pin_c056.json   (made by make_triton_pin.py from the Triton cache of the measured run)
+  GLM53_TRITON_PIN=data/triton_pin_exact.json   (made by make_triton_pin.py from the reference Triton cache)
   format v2: {"<kernel fn name>": {"keys": [[<tuning key list>, <cfg>], ...], "default": <cfg>}}
   format v1: {"<kernel fn name>": <cfg>}   (one config for every key)
   cfg = {"kwargs": {...}, "num_warps": w, "num_stages": s}

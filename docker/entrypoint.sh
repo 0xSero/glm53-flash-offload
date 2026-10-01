@@ -13,25 +13,30 @@ log() { echo "[glm53] $*" >&2; }
 die() { echo "[glm53] ERROR: $*" >&2; exit 1; }
 
 # ---- mode defaults; every value can be overridden with -e ---------------------------------------------------------
-#   fast  (default) run C056: GPU expert cache + zero-copy + AVX2 CPU tier for cold decode misses, batched decode
-#   exact           run G066a: same without the CPU tier; bit-exact with stock exllamav3, ~12.6 tok/s decode
+#   fast  (default) run G067: GPU expert cache + zero-copy + AVX2 CPU tier for cold decode misses, batched decode,
+#                   fused hyper-connection sites, fast tier split, shared expert on a side stream
+#   exact           run G066a: cache + zero-copy only, no CPU tier, no side-stream shared expert; bit-exact with
+#                   stock exllamav3, ~12.6 tok/s decode
 MODE=${GLM53_MODE:-fast}
 case "$MODE" in
-    fast)  D_TIER=1; D_RES=1.5; D_STAGE=2.0; MODE_ARGS=(-ambs 4) ;;
-    exact) D_TIER=0; D_RES=1.0; D_STAGE=2.6; MODE_ARGS=() ;;
+    fast)  D_TIER=1; D_RES=1.5; D_K=1; MODE_ARGS=(-ambs 4) ;;
+    exact) D_TIER=0; D_RES=1.0; D_K=0; MODE_ARGS=() ;;
     *) die "GLM53_MODE must be fast or exact (got $MODE)" ;;
 esac
+export GLM53_K_HCFUSE=${GLM53_K_HCFUSE:-$D_K}
+export GLM53_K_FTSPLIT=${GLM53_K_FTSPLIT:-$D_K}
+export GLM53_K_OVL=${GLM53_K_OVL:-$D_K}
 export GLM53_ZC_VRAM=${GLM53_ZC_VRAM-0}
 export GLM53_ZC_STATS=${GLM53_ZC_STATS:-$ROOT/data/stats_own_dec.json}
 export GLM53_EC=${GLM53_EC-1}
 export GLM53_EC_WARM=${GLM53_EC_WARM:-$ROOT/data/stats_own_dec.json}
 export GLM53_EC_RESERVE_GB=${GLM53_EC_RESERVE_GB:-$D_RES}
-export GLM53_EC_STAGE_GB=${GLM53_EC_STAGE_GB:-$D_STAGE}
+export GLM53_EC_STAGE_GB=${GLM53_EC_STAGE_GB:-2.6}
 export GLM53_EC_ELASTIC_GB=${GLM53_EC_ELASTIC_GB:-10}
 export GLM53_CPU_TIER=${GLM53_CPU_TIER:-$D_TIER}
 export GLM53_CT_CPUS=${GLM53_CT_CPUS:-auto}
 export GLM53_CT_THREADS=${GLM53_CT_THREADS:-0}
-export GLM53_TRITON_PIN=${GLM53_TRITON_PIN-$ROOT/data/triton_pin_c056.json}
+export GLM53_TRITON_PIN=${GLM53_TRITON_PIN-$ROOT/data/triton_pin_exact.json}
 export EXLLAMAV3_TUNE_CACHE=${EXLLAMAV3_TUNE_CACHE:-$ROOT/data/coop_autotune_1gpu.bin}
 export TRITON_CACHE_DIR=${TRITON_CACHE_DIR:-$ROOT/triton_cache}
 export PYTHONUNBUFFERED=1

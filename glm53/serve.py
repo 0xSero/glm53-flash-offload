@@ -6,6 +6,9 @@ Offload stack (each piece is a monkeypatch around stock exllamav3, enabled by en
   expert_cache.py  GLM53_EC=1           elastic CLOCK cache of experts in all free VRAM + prefill staging
   cpu_tier.py      GLM53_CPU_TIER=1     coldest decode misses computed by an AVX2 kernel on the host CPU
   triton_pin.py    GLM53_TRITON_PIN     fixed Triton autotune picks for the KDA (linear attention) kernels
+  k_hcfuse.py      GLM53_K_HCFUSE=1     fused hyper-connection decode sites (bit-exact)
+  k_ftsplit.py     GLM53_K_FTSPLIT=1    faster CPU-tier split kernel (bit-identical)
+  k_overlap.py     GLM53_K_OVL=1        shared expert on a side stream in decode (not bitwise: ~2e-3 rel per layer)
 
 Endpoints
   GET  /health, /v1/models, /server_info, /stats
@@ -50,6 +53,9 @@ def load():
     if os.environ.get("GLM53_EC"):
         import expert_cache
         expert_cache.install()
+    if os.environ.get("GLM53_K_OVL") == "1":   # shared experts out of the fused decode kernel (k_overlap.py)
+        import k_overlap
+        k_overlap.install()
     if os.environ.get("GLM53_TRITON_PIN"):
         import triton_pin
         triton_pin.install()
@@ -65,6 +71,14 @@ def load():
         expert_cache.attach(model)
     if os.environ.get("GLM53_CPU_TIER") == "1":   # register the pinned home copies, self-test, start the worker
         cpu_tier.start()
+        if os.environ.get("GLM53_K_FTSPLIT") == "1":   # faster split kernel, bit-identical outputs (k_ftsplit.py)
+            import k_ftsplit
+            k_ftsplit.install()
+    if os.environ.get("GLM53_K_OVL") == "1":   # shared expert on a side stream, after the cache + tier wrap
+        k_overlap.attach(model)
+    if os.environ.get("GLM53_K_HCFUSE") == "1":   # fused hyper-connection sites, bit-exact (k_hcfuse.py)
+        import k_hcfuse
+        k_hcfuse.install(model)
     t_load = time.time() - t_load
     print(f" -- loaded in {t_load:.1f} s", flush=True)
 
@@ -440,6 +454,12 @@ async def stats():
     if os.environ.get("GLM53_CPU_TIER") == "1":
         import cpu_tier
         st["cpu_tier"] = cpu_tier.summary()
+    if os.environ.get("GLM53_K_OVL") == "1":
+        import k_overlap
+        st["k_overlap"] = k_overlap.summary()
+    if os.environ.get("GLM53_K_HCFUSE") == "1":
+        import k_hcfuse
+        st["k_hcfuse"] = dict(k_hcfuse.STATS)
     return JSONResponse(st)
 
 

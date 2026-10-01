@@ -29,10 +29,10 @@ COPY . /opt/glm53
 RUN chmod 0755 /opt/glm53/docker/entrypoint.sh /opt/glm53/scripts/install.sh \
  && MAX_JOBS=${MAX_JOBS} /opt/glm53/scripts/install.sh /opt/glm53
 
-# Data paths; the tuning defaults per mode (fast = C056 with the CPU tier, exact = G066a without) live in the entrypoint.
+# Data paths; the tuning defaults per mode (fast = G067 with the CPU tier, exact = G066a without) live in the entrypoint.
 ENV GLM53_MODE=fast \
     GLM53_ZC_STATS=/opt/glm53/data/stats_own_dec.json GLM53_EC_WARM=/opt/glm53/data/stats_own_dec.json \
-    GLM53_TRITON_PIN=/opt/glm53/data/triton_pin_c056.json \
+    GLM53_TRITON_PIN=/opt/glm53/data/triton_pin_exact.json \
     EXLLAMAV3_TUNE_CACHE=/opt/glm53/data/coop_autotune_1gpu.bin TRITON_CACHE_DIR=/opt/glm53/triton_cache
 EXPOSE 30000
 ENTRYPOINT ["/opt/glm53/docker/entrypoint.sh"]
