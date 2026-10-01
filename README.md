@@ -99,7 +99,7 @@ hf download turboderp/GLM-5.3-Flash-exl3 --revision 3.05bpw --local-dir /data/GL
 # 2. serve on GPU 0, port 30000 (OpenAI API at /v1)
 docker run -d --name glm53 --gpus '"device=0"' --ulimit memlock=-1 --shm-size 16g -p 30000:30000 \
   -v /data/GLM-5.3-Flash-exl3-3.05bpw:/models \
-  ghcr.io/0xsero/glm53-flash-offload@sha256:<digest>
+  ghcr.io/0xsero/glm53-flash-offload@sha256:1159044a73d91804c25ffa0851d1668518220c631e2efd4e904b7cc0578a7e39
 
 docker logs -f glm53          # ready after ~2 min ("loaded in ... s")
 curl -s localhost:30000/v1/chat/completions -H 'content-type: application/json' \
@@ -124,10 +124,10 @@ Everything the numbers depend on, pinned:
 | piece | pin |
 |---|---|
 | model | `turboderp/GLM-5.3-Flash-exl3`, branch `3.05bpw`, revision `332ab457b709b7ba30dd9a448be5de03b80a7ac9` (125.3 GB) |
-| image | `ghcr.io/0xsero/glm53-flash-offload@sha256:<digest>` (see [Image smoke](#image-smoke)), built by [0xSero/local-ai-images](https://github.com/0xSero/local-ai-images) `glm53-flash-offload/Dockerfile` |
+| image | `ghcr.io/0xsero/glm53-flash-offload@sha256:1159044a73d91804c25ffa0851d1668518220c631e2efd4e904b7cc0578a7e39` (tag v2, build run [36842771789](https://github.com/0xSero/local-ai-images/actions/runs/36842771789), attested), built by [0xSero/local-ai-images](https://github.com/0xSero/local-ai-images) `glm53-flash-offload/Dockerfile` |
 | base | `lmsysorg/sglang@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f` (v0.5.20, SGLang commit 94602c9; CUDA 13.0.3, torch 2.13.0+cu130, Triton 3.7.1, transformers 5.12.1) |
 | exllamav3 | v1.5.1 = commit `958ec933361b24eb8426ec7222e5b0062a679dcd`, built with `TORCH_CUDA_ARCH_LIST=8.6` |
-| this repo | the commit the image's `GLM53_COMMIT` names (also in `/opt/glm53/COMMIT` inside the image) |
+| this repo | `c4b9160bdbd3bdbda9b2d50b763332c8580280fb` for that digest (the image's `GLM53_COMMIT`, also in `/opt/glm53/COMMIT`); later commits here are docs/results only unless a new digest is listed |
 | Triton picks | `data/triton_pin_exact.json` (7 FLA/KDA kernels) |
 | host | AMD EPYC 7443P 24 cores (AVX2, no AVX-512), 8-channel DDR4 503 GiB (136-140 GB/s measured read), RTX 3090 24 GB PCIe 4.0 x16 (~25 GB/s host-to-device), Samsung 990 PRO 4 TB NVMe, NVIDIA driver 610.57.04, Linux 7.2 |
 
@@ -141,7 +141,7 @@ python3 bench/sweep.py --url http://127.0.0.1:30000 --card rtx-3090-24gb/glm-5.3
   --config "<digest> fast" --prefill 8192 32768 --conc 1 2 4 --reps 3 --dec-reps 2 --no-early-exit --out sweep.json
 # decode quality of the CPU tier: paired tier-off / tier-on decode in one process (stop the server first; ~20 min)
 docker run --rm --gpus '"device=0"' --ulimit memlock=-1 --shm-size 16g -v <model dir>:/models -v $PWD:/out \
-  ghcr.io/0xsero/glm53-flash-offload@sha256:<digest> decode-kl --kl-out /out/decode_kl.json
+  ghcr.io/0xsero/glm53-flash-offload@sha256:1159044a73d91804c25ffa0851d1668518220c631e2efd4e904b7cc0578a7e39 decode-kl --kl-out /out/decode_kl.json
 ```
 
 `results/` holds the raw outputs of the campaign runs behind the tables: `G067/` (shipped `fast` defaults), `C056/`
@@ -199,7 +199,7 @@ decode speed roughly in proportion to the cache-miss traffic.
   (launch `registry/launches/exllamav3-glm-5.3-flash-exl3-3.05bpw-offload-128k-rtx-3090-24gb.json`; candidate until
   the CPU-tier decode fix lands)
 - local-ai-recipe-kit target: [`targets/glm-5.3-flash-offload.md`](https://github.com/0xSero/local-ai-recipe-kit/blob/main/targets/glm-5.3-flash-offload.md)
-  (submit your own measurements of this setup there)
+  (submit your own measurements of this setup there; PR [local-ai-recipe-kit#3](https://github.com/0xSero/local-ai-recipe-kit/pull/3))
 
 ## How it works
 
