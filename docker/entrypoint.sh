@@ -16,6 +16,14 @@ elif [ "${1:-}" = "pack-store" ] || [ "${1:-}" = "verify-store" ]; then
     P=(python3 "$ROOT/scripts/pack_glm53_store.py")
     A=(--model "${GLM53_MODEL_DIR:-/models}" --out-dir "${GLM53_NV_STORE_DIR:-/nvx}")
     T=${GLM53_PACK_THREADS:-8}
+    O=${GLM53_NV_STORE_DIR:-/nvx}
+    if [ "$1" = "verify-store" ]; then
+        [ -r "$O/glm53_flash_exl3_3.05bpw_experts.bin" ] || { echo "[glm53] ERROR: no store at $O/glm53_flash_exl3_3.05bpw_experts.bin; build it with pack-store" >&2; exit 1; }
+        python3 "$ROOT/docker/preflight.py" odirect "$O/glm53_flash_exl3_3.05bpw_experts.bin" || exit 1
+    else
+        [ -d "$O" ] && [ -w "$O" ] || { echo "[glm53] ERROR: $O is not a writable directory; mount the store directory there read-write for pack-store" >&2; exit 1; }
+        python3 "$ROOT/docker/preflight.py" odirect "$O" || exit 1
+    fi
     if [ "$1" = "verify-store" ]; then exec "${P[@]}" verify --threads "$T" "${A[@]}"; fi
     "${P[@]}" pack --threads "$T" "${A[@]}" && "${P[@]}" verify --threads "$T" "${A[@]}" \
         && exec "${P[@]}" cmp --sample "${GLM53_PACK_SAMPLE:-300}" "${A[@]}"
@@ -49,13 +57,13 @@ case "$MODE" in
     nvme-exact|nvme2)   # N119 S2: exact, nv2 (device-side stall, exclusive RAM tier), no CPU lane
            D_TIER=0; D_RES=1.0; D_K=0; MODE_ARGS=(); NV_MODE=2
            export GLM53_NV=2 GLM53_NV_CPU=${GLM53_NV_CPU:-0} GLM53_K_HCFUSE=${GLM53_K_HCFUSE:-1}
-           export GLM53_MAIN_CPUS=${GLM53_MAIN_CPUS-24} ;;
+           [ "${GLM53_MAIN_CPUS+x}" = x ] || GLM53_MAIN_DEFAULT=24 ;;
     nvme|nvme3)         # N119 S3: nv2 + AVX2 CPU lane on RAM-resident experts, batched decode
            D_TIER=0; D_RES=1.5; D_K=1; MODE_ARGS=(-ambs 4); NV_MODE=2
            export GLM53_NV=2 GLM53_NV_CPU=${GLM53_NV_CPU:-1} GLM53_K_FTSPLIT=0
            if [ "$MODE" = "nvme" ]; then   # the shipped defaults (campaign arm S3b2; reserve 1.5 GB as nvme3)
                export GLM53_K_OVL=${GLM53_K_OVL:-0} GLM53_NV_VRING=${GLM53_NV_VRING:-24} GLM53_NV_PREFETCH=${GLM53_NV_PREFETCH:-1}
-               export GLM53_MAIN_CPUS=${GLM53_MAIN_CPUS-24}
+               [ "${GLM53_MAIN_CPUS+x}" = x ] || GLM53_MAIN_DEFAULT=24
                export GLM53_MAX_RQ_TOKENS=${GLM53_MAX_RQ_TOKENS:-4096}   # page-allocation round, not an output cap: lets C2/C4 run together
            fi ;;
     *) die "GLM53_MODE must be fast, exact, nvme or nvme-exact (got $MODE)" ;;
@@ -126,28 +134,11 @@ if [ "$NV_MODE" != "0" ]; then
     if [ -r /sys/fs/cgroup/memory.swap.max ] && [ "$(cat /sys/fs/cgroup/memory.swap.max)" != "0" ]; then
         log "WARNING: memory.swap.max is $(cat /sys/fs/cgroup/memory.swap.max): pass --memory-swap equal to --memory, or swapped pages escape the cap"
     fi
-    if [ "$NV_MODE" = "2" ]; then   # nv2 pins its threads to fixed CPUs (defaults = the measured 48-thread EPYC layout)
-        python3 - <<'PY' || die "set GLM53_NV_CPU_CPUS / GLM53_MAIN_CPUS / GLM53_NV_CTL_CPU / GLM53_NV_READER_CPUS to CPUs inside the container's cpuset (README: 55 GB NVMe mode)"
-import os, sys
-def cpus(spec):
-    out = []
-    for part in spec.split(","):
-        if part:
-            a, _, b = part.partition("-")
-            out += range(int(a), int(b or a) + 1)
-    return set(out)
-have = os.sched_getaffinity(0)
-want = {"GLM53_NV_READER_CPUS": "26-39", "GLM53_NV_CTL_CPU": "25", "GLM53_MAIN_CPUS": ""}
-if os.environ.get("GLM53_NV_CPU") == "1":
-    want["GLM53_NV_CPU_CPUS"] = "2-23"
-bad = {k: sorted(cpus(os.environ.get(k, d)) - have) for k, d in want.items()}
-bad = {k: v for k, v in bad.items() if v}
-if bad:
-    print(f"[glm53] ERROR: CPUs outside this container's cpuset ({len(have)} CPUs, {min(have)}-{max(have)}): {bad}",
-          file=sys.stderr)
-    sys.exit(1)
-PY
+    if [ "$NV_MODE" = "2" ]; then   # nv2 pins its threads: the measured layout when the cpuset has it, else derived
+        LAYOUT=$(GLM53_MAIN_DEFAULT=${GLM53_MAIN_DEFAULT:-} python3 "$ROOT/docker/preflight.py" cpus) || exit 1
+        eval "$LAYOUT"
     fi
+    python3 "$ROOT/docker/preflight.py" odirect "$GLM53_NV_STORE" || exit 1
     log "NVMe store $GLM53_NV_STORE ($(( $(stat -c %s "$GLM53_NV_STORE") / 1000000000 )) GB), RAM tier ${GLM53_NV_RAM_GB:-auto}, CPU lane ${GLM53_NV_CPU:-0}"
 fi
 
