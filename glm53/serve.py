@@ -50,6 +50,10 @@ def load():
     if os.environ.get("GLM53_ZC_VRAM"):
         import exl3_tiers
         exl3_tiers.install()
+    if os.environ.get("GLM53_NV") in ("1", "2"):   # N116/N119 NVMe tier: loader skips the routed-expert bytes
+        assert not os.environ.get("GLM53_ZC_VRAM"), "GLM53_NV replaces the pinned home copy (unset GLM53_ZC_VRAM)"
+        import nv_tier
+        nv_tier.install()
     if os.environ.get("GLM53_EC"):
         import expert_cache
         expert_cache.install()
@@ -69,6 +73,11 @@ def load():
         cpu_tier.wrap(model)
     if os.environ.get("GLM53_EC"):
         expert_cache.attach(model)
+    if os.environ.get("GLM53_NV") == "1":
+        nv_tier.finish(model)
+    if os.environ.get("GLM53_NV") == "2":
+        import nv2
+        nv2.finish(model)
     if os.environ.get("GLM53_CPU_TIER") == "1":   # register the pinned home copies, self-test, start the worker
         cpu_tier.start()
         if os.environ.get("GLM53_K_FTSPLIT") == "1":   # faster split kernel, bit-identical outputs (k_ftsplit.py)
@@ -206,8 +215,13 @@ async def run_job(ids, sp, stop_strings=None):
     max_new = sp.get("max_new_tokens")
     room = CTX - ids.shape[-1] - (args.num_draft_tokens or 8) - 2
     max_new = room if max_new is None else min(int(max_new), room)
+    # N119: GLM53_MAX_RQ_TOKENS = page-allocation round per job (exllamav3 max_rq_tokens: the job requeues itself after
+    # that many tokens and keeps going; NOT an output cap). Without it every job reserves pages for the whole remaining
+    # context, so a second concurrent job never starts and C2/C4 run one stream after another.
+    rq = int(os.environ.get("GLM53_MAX_RQ_TOKENS", "0")) or None
     job = AsyncJob(gen, input_ids=ids, max_new_tokens=max(1, max_new), sampler=make_sampler(sp),
-                   stop_conditions=list(EOS) + list(stop_strings or []), decode_special_tokens=False)
+                   stop_conditions=list(EOS) + list(stop_strings or []), decode_special_tokens=False,
+                   **({"max_rq_tokens": rq} if rq else {}))
     G["stats"]["requests"] += 1
     n, text, done = 0, "", False
     try:
@@ -485,7 +499,28 @@ async def stats():
     if os.environ.get("GLM53_K_HCFUSE") == "1":
         import k_hcfuse
         st["k_hcfuse"] = dict(k_hcfuse.STATS)
+    if os.environ.get("GLM53_NV") == "1":
+        import nv_tier
+        st["nv_tier"] = nv_tier.summary()
+    if os.environ.get("GLM53_NV") == "2":
+        import nv2
+        st["nv2"] = nv2.summary()
     return JSONResponse(st)
+
+
+@app.get("/nv_trace")
+async def nv_trace():
+    import nv_tier
+    return JSONResponse(nv_tier.save_trace())
+
+
+@app.get("/nv_verify")
+async def nv_verify(n: int = 64):
+    if os.environ.get("GLM53_NV") == "2":
+        import nv2
+        return JSONResponse(nv2.NV.verify(n))
+    import nv_tier
+    return JSONResponse(nv_tier.NV.verify(n) if nv_tier.NV is not None else {"error": "GLM53_NV off"})
 
 
 @app.get("/health")
@@ -494,5 +529,12 @@ async def health():
 
 
 if __name__ == "__main__":
+    import faulthandler, signal
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
     load()
+    if os.environ.get("GLM53_MAIN_CPUS"):   # N119: GPU-feeding thread off the CPU-tier cores
+        import nv2
+        os.sched_setaffinity(0, set(nv2._cpus(os.environ["GLM53_MAIN_CPUS"])))
+        torch.set_num_threads(int(os.environ.get("GLM53_TORCH_THREADS", "1")))   # no spinning OpenMP pool on the tier cores
+        print(f" -- main thread on cpus {sorted(os.sched_getaffinity(0))}", flush=True)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")

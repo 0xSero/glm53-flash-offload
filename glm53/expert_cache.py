@@ -24,6 +24,7 @@ Env: GLM53_EC=1 (serve.py), GLM53_EC_RESERVE_GB (per GPU, default 2.5), GLM53_EC
      GLM53_EC_WARM (optional JSON {layer_key: [score x E]}: initial fill by score), GLM53_EC_MAX_SLOTS (per GPU cap)
 """
 import json, os, time
+import numpy as np
 import torch
 
 _SRC = r"""
@@ -291,6 +292,8 @@ def install():
 class Pool:
     def __init__(self, device, mods, reserve, max_slots, admit_max, stage_bytes=0, stage_min=8192):
         self.device = device
+        self.nv = None          # nv_tier.NvTier (GLM53_NV=1): dynamic homes (RAM slot / placeholder), NVMe fills
+        self.nv2 = None         # nv2.Nv2 (GLM53_NV=2): device-side stall, exclusive RAM tier, CPU tier (N119)
         self.stage_min = stage_min
         self.mods = mods
         self.admit_max = admit_max
@@ -337,6 +340,7 @@ class Pool:
         if self.elastic and self.chunks:
             nflex = min(len(self.chunks), int(-(-self.elastic // (self.spc * self.rec))))
             self.flex = list(range(len(self.chunks) - nflex, len(self.chunks)))
+        self.flex_all = list(self.flex)
         self.in_prefill = False
         self.elastic_stats = {"enter": 0, "exit": 0, "realloc_fail": 0}
         L = len(mods)
@@ -381,6 +385,7 @@ class Pool:
             self.last_li = None
             self.slot_cpu = None
             self.stage_stats = {"forwards": 0, "layers": 0, "experts": 0, "overflow": 0}
+            self.pending = None
         for li, m in enumerate(mods):
             m._ec = (self, li)
 
@@ -461,10 +466,140 @@ class Pool:
             self.staged[li] = (b, idx)
         self._issue(li + 1, (li + 1) % 2)              # next layer, other buffer, overlaps this layer's compute
 
-    def _elastic_enter(self):
+    def _stage_hook_nv(self, li, n_picks):
+        """NV mode (nv_tier.py): as _stage_hook, but the next layer's non-VRAM experts come from their RAM slot or from
+        NVMe through a pinned ring, fetched on a background thread one layer ahead. Every non-VRAM expert of a layer is
+        staged (no zero-copy fallback: a non-resident expert's home is a placeholder)."""
+        prefill = n_picks >= self.stage_min
+        for l in [k for k in self.staged if k != li]:
+            self._restore(l)                          # stream order: after that layer's MoE
+        if not prefill:
+            self.last_li = None
+            if self.in_prefill:
+                self._elastic_exit()
+            return
+        cur = torch.cuda.current_stream(self.device)
+        if self.last_li is None or li <= self.last_li:  # new forward pass on this device
+            if self.elastic and not self.in_prefill:
+                self._elastic_enter()
+            self.slot_np = self.slotof.cpu().numpy()    # stable during prefill (no admission)
+            self.stage_stats["forwards"] += 1
+            self.pending = None
+        self.last_li = li
+        if self.pending is None or self.pending[0] != li:
+            self.pending = self.nv.stage_submit(li, li % 2)
+        h = self.pending
+        self.nv.stage_wait(h)
+        _, b, take, _f = h
+        cur.wait_event(self.ev_ready[b])
+        if len(take):
+            idx = torch.from_numpy(take.astype(np.int64)).to(self.device)
+            base = self.stage[b].data_ptr()
+            a = base + torch.arange(len(take), dtype=torch.int64, device=self.device) * self.rec
+            pg, pu, pd, gu = self.keep[li]
+            pg.index_copy_(0, idx, a); pu.index_copy_(0, idx, a + self.off_u); pd.index_copy_(0, idx, a + self.off_d)
+            if gu is not None:
+                gu.index_copy_(0, idx, torch.stack([a, a + self.off_u], 1))
+            self.staged[li] = (b, idx)
+        self.stage_stats["layers"] += 1; self.stage_stats["experts"] += len(take)
+        self.pending = self.nv.stage_submit(li + 1, (li + 1) % 2)   # next layer, other buffer, overlaps this layer
+
+    def _ec_hits(self, li, sel):
+        """Staged forwards: CLOCK hit marking only (no admission), as Pool.step with admit off."""
+        _ext().ec_step(sel, self.first, li, self.E, self.S, 0, self.slotof, self.home, self.tabs, self.owner, self.refb,
+                       self.pin, self.ctl, self.jobs, self.stats, self.cbase.data_ptr(), self.spc, self.rec, self.off_u,
+                       self.off_d)
+
+    def _restore_nv2(self, li):
+        import nv2
+        b, idx = self.staged.pop(li)
+        nv2.ext().nv_restore(idx, li, self.E, self.nv2.a["home"], self.tabs)
+
+    _pfprof = os.environ.get("GLM53_NV_PFPROF", "0") == "1"
+    _pfev = []
+
+    def _stage_hook_nv2(self, li, n_picks):
+        """N119 nv2: staged prefill. Per forward the host engine pins the layer's RAM-resident experts and reads the
+        NVMe-only ones through a FIFO ring several layers ahead; per layer the copy stream H2Ds them into staging buffer
+        li % 2 (GIL-free job on a background thread, one layer ahead of the compute stream)."""
+        import nv2
+        e = nv2.ext()
+        prefill = n_picks >= self.stage_min
+        for l in [k for k in self.staged if k != li]:
+            self._restore_nv2(l)                      # stream order: after that layer's MoE
+        if not prefill:
+            if self.last_li is not None or getattr(self, "_st_open", False):
+                if self.pending is not None:
+                    self.nv2.stage_wait(self.pending)
+                    self.pending = None
+                e.stage_end()
+                self._st_open = False
+            self.last_li = None
+            if self.in_prefill:
+                self._elastic_exit()
+            return
+        cur = torch.cuda.current_stream(self.device)
+        if self.last_li is None or li <= self.last_li:  # new forward pass on this device
+            if self.pending is not None:
+                self.nv2.stage_wait(self.pending)
+                self.pending = None
+            if self._pfprof and self._pfev:
+                torch.cuda.synchronize(self.device)
+                w = [a.elapsed_time(b) for a, b in self._pfev]
+                tot = self._pfev[0][0].elapsed_time(self._pfev[-1][1])
+                print(f" -- nv2 prefill forward: {len(w)} layers, GPU stalled on staging {sum(w):.0f} ms of {tot:.0f} ms "
+                      f"(max {max(w):.0f} ms/layer)", flush=True)
+                self.stage_stats["gpu_stall_ms"] = self.stage_stats.get("gpu_stall_ms", 0) + sum(w)
+                self._pfev = []
+            if self.elastic and not self.in_prefill:
+                t_el = time.perf_counter()
+                self._elastic_enter(n_picks // 8)
+                self.stage_stats["elastic_enter_ms"] = self.stage_stats.get("elastic_enter_ms", 0) + (time.perf_counter() - t_el) * 1e3
+            self.slot_np = self.slotof.cpu().numpy()    # stable during prefill (no admission)
+            t = time.perf_counter()
+            e.stage_begin(torch.from_numpy(np.ascontiguousarray(self.slot_np)), li)
+            self._st_open = True
+            self.stage_stats["forwards"] += 1
+            self.stage_stats["begin_ms"] = self.stage_stats.get("begin_ms", 0) + (time.perf_counter() - t) * 1e3
+            self.pending = None
+        self.last_li = li
+        if self.pending is None or self.pending[0] != li:
+            if self.pending is not None:
+                self.nv2.stage_wait(self.pending)
+            self.pending = self.nv2.stage_submit(li, li % 2)
+        h = self.pending
+        self.nv2.stage_wait(h)
+        _, b, take, _f, _ev = h
+        if self._pfprof:   # GPU-side stall on the staging copy: events right before / after the cross-stream wait
+            e0 = torch.cuda.Event(enable_timing=True); e0.record(cur)
+        cur.wait_event(self.ev_ready[b])
+        if self._pfprof:
+            e1 = torch.cuda.Event(enable_timing=True); e1.record(cur)
+            self._pfev.append((e0, e1))
+        if len(take):
+            idx = torch.from_numpy(take.astype(np.int64)).to(self.device)
+            base = self.stage[b].data_ptr()
+            a = base + torch.arange(len(take), dtype=torch.int64, device=self.device) * self.rec
+            pg, pu, pd, gu = self.keep[li]
+            pg.index_copy_(0, idx, a); pu.index_copy_(0, idx, a + self.off_u); pd.index_copy_(0, idx, a + self.off_d)
+            if gu is not None:
+                gu.index_copy_(0, idx, torch.stack([a, a + self.off_u], 1))
+            self.staged[li] = (b, idx)
+        self.stage_stats["layers"] += 1; self.stage_stats["experts"] += len(take)
+        self.pending = self.nv2.stage_submit(li + 1, (li + 1) % 2)   # next layer, other buffer, overlaps this layer
+
+    def _elastic_enter(self, ntok=None):
         """Prefill: evict + disable the flex chunks' slots, hand their memory back to torch (activations of big
         chunks), allocate the staging buffers from it."""
         e = _ext()
+        self.flex = list(self.flex_all)
+        if ntok is not None and self.nv2 is not None and os.environ.get("GLM53_EC_ELASTIC_DYN", "1") == "1":
+            # N119: short forwards need the staging buffers plus small activations, not the whole 10 GB
+            need = 2 * self.stage_n * self.rec + ntok * float(os.environ.get("GLM53_EC_ACT_MB_PER_TOK", "0.6")) * 1e6 + 0.3e9
+            nf = min(len(self.flex_all), int(-(-need // (self.spc * self.rec))))
+            self.flex = self.flex_all[len(self.flex_all) - nf:]
+        if self.nv2 is not None:
+            self.elastic_stats["wb"] = self.elastic_stats.get("wb", 0) + self.nv2.elastic_writeback(self.flex)
         for c in self.flex:
             e.ec_evict(c * self.spc, (c + 1) * self.spc, 1, self.E, self.owner, self.slotof, self.home, self.tabs,
                        self.refb, self.pin)
@@ -514,7 +649,7 @@ class Pool:
         b = 1 << max(0, (n - 1).bit_length())
         self.size_hist[b] = self.size_hist.get(b, 0) + 1
         if self.stage_n:
-            self._stage_hook(li, sel.numel())
+            (self._stage_hook_nv if self.nv is not None else self._stage_hook)(li, sel.numel())
         e = _ext()
         sel = sel.reshape(-1)
         if sel.dtype != torch.long or not sel.is_contiguous():
@@ -540,6 +675,13 @@ class Pool:
                 else:
                     loc = range(self.first, self.first + self.E)
                     top = sorted(loc, key=lambda x: -sc[x])[:k]
+                if self.nv is not None:   # only experts whose bytes are in the RAM tier (home = RAM slot)
+                    top = [x for x in top if self.nv.ram_slot[li * self.E + x - self.first] >= 0]
+                if self.nv2 is not None:
+                    if not hasattr(self, "_warm_ks"):
+                        import nv2
+                        self._warm_ks = nv2.ext().state()[1].numpy()
+                    top = [x for x in top if self._warm_ks[li * self.E + x - self.first] == 2]
                 for c in range(0, len(top), 256):
                     sel = torch.tensor(top[c:c + 256], dtype=torch.long, device=self.device)
                     self.step(li, sel, True)
@@ -548,6 +690,10 @@ class Pool:
 
     def verify(self):
         """Full consistency check (reads every owned slot and its home copy over PCIe): bytes and pointer tables."""
+        if self.nv2 is not None:
+            return dict(self.nv2.verify(64), device=str(self.device))
+        if self.nv is not None:
+            return dict(self.nv.verify(64), device=str(self.device))
         torch.cuda.synchronize(self.device)
         o = _ext().ec_verify(self.owner, self.slotof, self.home, self.tabs, self.cbase.data_ptr(), self.spc, self.rec, self.sg,
                              self.su, self.sd, self.off_u, self.off_d, self.S, self.E, len(self.mods)).tolist()
@@ -603,7 +749,7 @@ def _hook_prefill(cls):
                 n = 0
             for p in POOLS:
                 if p.elastic and p.stage_n and not p.in_prefill and n * 8 >= p.stage_min:
-                    p._elastic_enter()
+                    p._elastic_enter(n)
             return _orig(self, input_ids, params)
         setattr(cls, name, wrapped)
     cls._glm53_ec_prefill_hooked = True
@@ -623,18 +769,48 @@ def attach_modules(mods):
     for dev, ms in by_dev.items():
         p = Pool(torch.device(dev), ms, reserve, int(mx) if mx else None, admit_max, stage_bytes, stage_min)
         POOLS.append(p)
+        if os.environ.get("GLM53_NV") == "1":   # N116: NVMe tier (RAM warm first: the VRAM warm copies from RAM)
+            import nv_tier
+            nv_tier.attach_pool(p)
+            if scores:
+                p.nv.warm(scores)
+        if os.environ.get("GLM53_NV") == "2":   # N119: nv2 (RAM warm first: the VRAM warm copies from RAM)
+            import nv2
+            nv2.attach_pool(p)
+            if scores:
+                p.nv2.warm(scores)
         if scores:
             p.warm(scores)
+        if p.nv is not None:
+            p.nv.post_warm()
+        if p.nv2 is not None:
+            p.nv2.post_warm()
+            p.nv2.cpu_setup()
         for m in ms:
             orig = m.routing_fn
 
             def routed(bsz, cfg, z, params, _orig=orig, _m=m):
                 sel, w = _orig(bsz, cfg, z, params)
                 pool, li = _m._ec
+                _m._nv2_cpu = False
                 if not params.get("autosplit_measure") and not params.get("tp_warmup"):
+                    if pool.nv2 is not None:
+                        sel, w, _m._nv2_cpu = pool.nv2.layer(li, sel, w, z, bsz)
+                        return sel, w
+                    if pool.nv is not None:
+                        pool.nv.ensure(li, sel, w)   # every pick VRAM- or RAM-resident before ec_step (stall)
                     pool.step(li, sel, sel.numel() <= pool.admit_max)
                 return sel, w
             m.routing_fn = routed
+            if p.nv2 is not None:
+                orig_comb = m.cpu_split_combine
+
+                def comb(fhs, cpu_partial, cpu_pending, shape, _orig=orig_comb, _m=m):
+                    if getattr(_m, "_nv2_cpu", False):
+                        _m._nv2_cpu = False
+                        fhs = _m._ec[0].nv2.combine(fhs)
+                    return _orig(fhs, cpu_partial, cpu_pending, shape)
+                m.cpu_split_combine = comb
         print(f" -- expert_cache: {dev}: {len(ms)} MoE layers (experts {p.first}..{p.first + p.E - 1}), {p.S} slots x "
               f"{p.rec / 1e6:.2f} MB = {p.S * p.rec / 1e9:.2f} GB ({p.S / max(1, len(ms)):.1f}/layer), admit <= "
               f"{admit_max} picks, stage 2 x {p.stage_n} experts (>= {stage_min} picks)"
