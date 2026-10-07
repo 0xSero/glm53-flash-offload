@@ -8,12 +8,17 @@ during decode on the host cores.
 It is a thin layer of monkeypatches over **stock exllamav3 1.5.1** (no exllamav3 source edits) plus a few small
 custom kernels. This is the exact code and configuration of run G067 of the FreeToken-EXL3 campaign.
 
-Two modes, one switch (`GLM53_MODE`):
+Four modes, one switch (`GLM53_MODE`):
 
 | mode | what runs | quality vs stock exllamav3 | host RAM |
 |---|---|---|---|
 | `fast` (default) | GPU expert cache + zero-copy misses + **AVX2 CPU tier** for cold decode misses, batched decode (`-ambs 4`), fused decode kernels | prefill exact; decode **not exact** (see Quality) | ~218 GiB (234 GB) |
 | `exact` (`-e GLM53_MODE=exact`) | GPU expert cache + zero-copy misses, nothing else | bit-exact (panel top-1 1.0000, KL 0) | ~111 GiB (119 GB) |
+| `nvme` (`-e GLM53_MODE=nvme`) | routed experts from a packed **NVMe store** through a RAM tier sized to the container cap + GPU cache + AVX2 CPU lane, batched decode | prefill exact; decode **not exact** (KL 0.0047) | **55 GiB cap** + 117 GB NVMe store |
+| `nvme-exact` | the NVMe tier without the CPU lane | bit-exact | 55 GiB cap + 117 GB NVMe store |
+
+The big-RAM modes (`fast`, G067, the default) are measured below; the NVMe modes (14.85-16.27 tok/s decode in 55 GiB,
+image digest `82eef823`) are in [55 GB NVMe mode](#55-gb-nvme-mode).
 
 ## Measured
 
@@ -91,6 +96,15 @@ checkpoint; metric = top-1 agreement and mean KL over the reference top-20.
   32k / 64k-token prompts (was 14.1-14.9 with a 130-185-token burst at the end). Check any server with
   `python3 bench/stream_rate.py --url http://HOST:30000` (PASS = text arrives evenly, no end burst).
 - `fast` mode keeps two copies of the experts in RAM (~235 GB); a single-copy fast mode (~170 GB) is in progress.
+- `nvme` mode decode is not exact (CPU lane, paired KL 0.0047 / top-1 0.986); `nvme-exact` is. The `nvme` CPU lane
+  applies exllamav3's SwiGLU clamp (`swiglu_limit` 10); the `fast` CPU tier (`kernels/cpu_avx2/`) does not. On the NVMe
+  lane the clamp alone moved the paired KL from 0.0063 to 0.0047, so it is a candidate part of the `fast` decode
+  difference; not changed in `fast` yet.
+- `nvme-exact` (and `nvme` with `-e GLM53_MAX_RQ_TOKENS=0`) decodes concurrent requests one after another: without a
+  page-allocation round each job reserves KV pages for its whole remaining context. `nvme` sets 4096.
+- The NVMe modes pin threads to fixed CPUs (defaults = the measured 24-core / 48-thread EPYC with `--cpuset-cpus
+  2-39`); other CPUs need the `GLM53_NV_*CPU*` / `GLM53_MAIN_CPUS` variables set (the entrypoint checks them). Decode
+  speed with a single NVMe drive instead of the measured 4-drive array is not measured.
 
 ## Host requirements
 
@@ -133,6 +147,126 @@ checkpoint's vision tower is not loaded). Requests are not capped: `max_tokens` 
 
 Without Docker: exllamav3 1.5.1 built for your GPU, then `scripts/install.sh` (builds the extensions) and `docker/entrypoint.sh` with `GLM53_ROOT=$PWD GLM53_MODEL_DIR=/path/to/model`.
 
+## 55 GB NVMe mode
+
+`GLM53_MODE=nvme` serves the same checkpoint on the same GPU with the container capped at **55 GiB of host RAM**
+(`fast` needs ~218 GiB, `exact` ~111 GiB). The routed experts (42 layers x 288 x 9.44 MB = 114.2 GB) are not loaded
+from the checkpoint. They are read with `O_DIRECT` from a packed expert store on NVMe (117.3 GB, built once from the
+checkpoint) into three exclusive tiers:
+
+- **VRAM**: the elastic CLOCK expert cache, as in the other modes (1,312 slots = 12.4 GB with the 1.5 GB reserve of
+  `nvme`, capped at 1,376 by `GLM53_EC_MAX_SLOTS`).
+- **RAM**: a pinned arena sized from the container memory cap (4,831 experts = 42.5 GiB at `--memory 55g`).
+  Experts evicted from VRAM are written back into it, so VRAM + RAM hold ~6,100 distinct experts (51 % of 12,096).
+- **NVMe**: everything else, read on demand by a 16-thread pread pool, plus a prefetch of predicted picks.
+
+Per decode MoE layer the GPU publishes its unique picks to a mapped ring with no host sync. A controller thread
+(`kernels/nv2/nv2_host.cpp`) plans a lane for each pick: VRAM hit, RAM (zero-copy read + admit), AVX2 CPU lane (cold
+RAM-resident experts, as the `fast` CPU tier), or NVMe read into a fresh RAM slot. The GPU waits on the reply
+device-side, so an NVMe miss stalls that layer instead of being skipped. Prefill stages each layer's experts from RAM
+and from a pinned FIFO ring that a reader fills several layers ahead. Code: `glm53/nv2.py` (this mode),
+`glm53/nv_tier.py` (loader and store reader), `kernels/nv2/`, the `_stage_hook_nv2` path in `glm53/expert_cache.py`.
+
+| mode | what runs | quality vs stock exllamav3 | host |
+|---|---|---|---|
+| `nvme` | NVMe tier + AVX2 CPU lane for cold RAM-resident decode picks, batched decode (`-ambs 4`) with concurrent streams (`GLM53_MAX_RQ_TOKENS=4096`) | prefill exact; decode **not exact** (CPU lane; paired KL 0.0047) | `--memory 55g`, 117.3 GB NVMe store |
+| `nvme-exact` | NVMe tier, no CPU lane: every pick on exllamav3's GPU kernels | bit-exact (panel 1.0000 / KL 0; greedy answers identical to `exact`) | same |
+
+### Host requirements (in addition to [Host requirements](#host-requirements), RAM rows excepted)
+
+| | requirement | measured on |
+|---|---|---|
+| NVMe store | **117.3 GB** (109.3 GiB) `glm53_flash_exl3_3.05bpw_experts.bin` + 0.85 MB manifest `.json`, on a filesystem that supports `O_DIRECT` (xfs, ext4). Mount it **read-only** at `/nvx`. Build it with `pack-store` (below). The checkpoint is still needed at `/models` for the non-expert weights (its 114.2 GB of expert bytes are never read) | 4x Samsung 9100 PRO 1 TB, md RAID0 (512k chunk), xfs, on a PCIe 4.0 x16 4-slot card; `verify-store` re-read + sha256 6.1-10.9 GB/s |
+| NVMe bandwidth | the tier reads ~7 GB/s on average during the sweep (20.2 TB of reads in the 46-minute S3b2 run: demand misses, prefetch and prefill staging). Decode speed on one drive (~7 GB/s peak, lower at queue depth 24) is **not measured** | as above |
+| host RAM | `--memory 55g --memory-swap 55g` (Docker's `g` = GiB, so 59.1 GB). `--memory-swap` must equal `--memory`: the default (2x) lets swapped-out pages escape the cap. The RAM tier takes the cap minus what is already used, minus a 3 GiB margin, the 1.7 GiB prefill ring, 0.3 GiB, and the **`-rcs` reserve**: exllamav3's host-side recurrent-state cache (`-rcs` / `--recurrent_cache_size`, default 4 GB) grows while serving, so the tier leaves room for it. Passing `-rcs N` changes the reserve to match. Measured `memory.peak` 51.3 GiB of 55 at the end of the S3b2 sweep. Keep `--shm-size` small (1g; tmpfs pages count against the cap) and `--ulimit memlock=-1` (the RAM tier is `cudaHostRegister`ed) | 503 GiB host, 55 GiB cap |
+| GPU | `-e GLM53_EC_MAX_SLOTS=1376` on a 24 GB card that also drives a desktop: it caps the expert cache at the G067 size, so later VRAM use by the display does not run the CUDA graphs out of memory (arm S3b, reserve 1.0 GB with concurrent decode, hit a CUDA OOM in `graph.cu` mid-sweep; S3b2 with 1.5 GB ran clean) | RTX 3090, display on the same GPU |
+| CPU | AVX2 + FMA + F16C for the CPU lane. Threads are pinned: CPU lane 22 threads on cpus 2-23, the GPU-feeding main thread on 24, the controller on 25, 16 NVMe reader threads on cpus 26-39. Run with `--cpuset-cpus 2-39` on a 24-core / 48-thread host, or set `GLM53_NV_CPU_CPUS`, `GLM53_MAIN_CPUS`, `GLM53_NV_CTL_CPU`, `GLM53_NV_READER_CPUS` to CPUs inside your cpuset (the entrypoint refuses to start otherwise) | EPYC 7443P |
+| network | measured with `--network host` (`-e PORT=...`): no docker-proxy in the request path. A bridge network with `-p` should also work but was not measured in this mode | host network |
+
+### Run (NVMe mode)
+
+```bash
+IMG=ghcr.io/0xsero/glm53-flash-offload@sha256:82eef823f95b89fcb14b8379d45315d3a632aaa054fb04e3418b62a3ec2ff1ff
+# 1. once: pack the routed experts into the store (CPU only; pack + O_DIRECT sha256 re-read of every record + byte
+#    compare of a sample against the checkpoint; ~1 min from page cache on the measured array)
+docker run --rm -v /data/GLM-5.3-Flash-exl3-3.05bpw:/models:ro -v /mnt/nvx/glm53:/nvx "$IMG" pack-store
+docker run --rm -v /data/GLM-5.3-Flash-exl3-3.05bpw:/models:ro -v /mnt/nvx/glm53:/nvx:ro "$IMG" verify-store   # re-check any time (~20 s)
+
+# 2. serve on GPU 0, port 30000, inside 55 GiB of host RAM
+docker run -d --name glm53-nvme --gpus '"device=0"' --memory 55g --memory-swap 55g --shm-size 1g --ulimit memlock=-1 \
+  --cpuset-cpus 2-39 --network host -e PORT=30000 -e GLM53_MODE=nvme -e GLM53_EC_MAX_SLOTS=1376 \
+  -v /data/GLM-5.3-Flash-exl3-3.05bpw:/models:ro -v /mnt/nvx/glm53:/nvx:ro "$IMG"
+docker logs -f glm53-nvme     # ready after ~80 s ("loaded in ... s"; 76 s in P003)
+```
+
+Exact variant: `-e GLM53_MODE=nvme-exact`. The `fast` and `exact` modes in this digest are the same code paths as
+`bb633b0b` (the new code only runs when `GLM53_NV` is set by an NVMe mode), but they were not re-measured in it; the
+big-RAM default stays [`bb633b0b`](#run). `GLM53_MODE=nvme1/nvme2/nvme3` are the campaign names (N116 S1, S2, S3
+without the shipped defaults).
+
+### Measured (NVMe mode)
+
+Same host and protocol as [Measured](#measured) (`sweep.py --template glm --prefill 8192 32768 --conc 1 2 4 --reps 3
+--dec-reps 2`, natural completions), container under `--memory 55g --memory-swap 55g`, run as above.
+
+**`nvme` (S3b2, the shipped defaults)**: `-cs 131072 --max-batch-size 8 -chunk_size 8192 -ambs 4`; expert cache
+1,312 slots (12.4 GB; reserve 1.5 GB, cap 1,376), staging 2 x 295 experts; RAM tier 4,831 experts (42.5 GiB); CPU
+lane 22 threads (cpus 2-23); `GLM53_MAX_RQ_TOKENS=4096`, `GLM53_NV_PREFETCH=1`, `GLM53_NV_VRING=24`, `GLM53_K_OVL=0`.
+
+| prefill size | prefill speed | decode speed | concurrency | kv cache | gpu count |
+|---|---|---|---|---|---|
+| 8,192 | 583 tok/s | 14.85 tok/s | 1 | 131,072 tokens | 1 |
+| 8,192 | - | 15.62 tok/s aggregate (7.87 per stream) | 2 | 131,072 tokens | 1 |
+| 8,192 | - | 16.27 tok/s aggregate (4.63 per stream) | 4 | 131,072 tokens | 1 |
+| 32,768 | 812 tok/s | 13.46 tok/s | 1 | 131,072 tokens | 1 |
+| 32,768 | - | not run | 2 | 131,072 tokens | 1 |
+
+Where the decode picks were served over the S3b2 run: 39 % VRAM, 54 % RAM (of which the CPU lane computed 41 % of all
+picks), 7 % NVMe. Container memory: `memory.current` 48.1 GiB at ready, `memory.peak` 51.3 GiB at the end (cap 55 GiB);
+host MemAvailable fell by 48.5 GiB at load. NVMe reads over the 46-minute run: 20.2 TB (~7 GB/s average, demand +
+prefetch + prefill staging); 0 read errors, 0 device-side reply timeouts. The published image under the README command
+measured 5-8 % lower on a busier host (see [Image smoke](#image-smoke), run P003: same-conditions A/B shows the image
+at or above the campaign build).
+
+Without `GLM53_MAX_RQ_TOKENS` (arm S3a: reserve 1.0 GB, otherwise the same) every job reserves KV pages for its whole
+remaining context, so a second request does not start until the first finishes: C1 15.30, "C2" 14.68 and "C4" 14.59
+tok/s aggregate with up to 455 s to first token, C1 at 32k 13.77, prefill 576 / 814. S3b2 trades 3 % of C1 for real
+concurrency (C4 time to first token <= 9.5 s).
+
+**`nvme-exact` (S2a)**: the same without the CPU lane, reserve 1.0 GB, `GLM53_MAX_RQ_TOKENS` unset (streams decode one
+after another; `-e GLM53_MAX_RQ_TOKENS=4096` enables concurrent decode, not measured in this mode).
+
+| prefill size | prefill speed | decode speed | concurrency | kv cache | gpu count |
+|---|---|---|---|---|---|
+| 8,192 | 564 tok/s | 8.28 tok/s | 1 | 131,072 tokens | 1 |
+| 8,192 | - | 8.23 tok/s aggregate (streams ran one at a time) | 2 | 131,072 tokens | 1 |
+| 8,192 | - | 8.28 tok/s aggregate (streams ran one at a time) | 4 | 131,072 tokens | 1 |
+| 32,768 | 806 tok/s | 7.74 tok/s | 1 | 131,072 tokens | 1 |
+| 32,768 | - | not run | 2 | 131,072 tokens | 1 |
+
+For comparison, all experts in RAM: `exact` 12.6 tok/s, `fast` 28.2 tok/s at C1. Prefill is 81-85 % of the all-RAM
+modes (697-710 / 945-951).
+
+### Quality (NVMe mode)
+
+- **Prefill / teacher-forced panel, both NVMe modes: top-1 1.0000, KL 0** (2,154 positions; S2a, S3a, S3b2 and the
+  image smoke P003). The tiers only change where an expert's bytes come from; the store is a byte copy of the checkpoint's expert tensors
+  (verified by sha256 at pack time and by `verify-store`), and the server byte-compares sampled VRAM and RAM slots
+  against fresh store reads at start (`/nv_verify` repeats it on demand; every run here: 0 bad).
+- **`nvme-exact` decode is exact**: greedy answers to 5 prompts are identical to `exact` mode.
+- **`nvme` decode is not exact** (the CPU lane computes ~3.6 experts per layer call in fp32 on the host). Paired
+  check in one process with the S3a settings, whose CPU lane is the same as S3b2's (`decode-kl`, 6 prompts, 1,088
+  forced decode positions, CPU lane off vs on): **mean KL 0.0047 (p99 0.082, max 0.26), top-1 agreement 0.986**; the
+  control pass (lane off in both passes) gives KL 0 / top-1 1.0000. The
+  lane applies exllamav3's SwiGLU clamp (`swiglu_limit` 10, `GLM53_NV_CLAMP=1`); without it the same check measures
+  KL 0.0063 / top-1 0.983. The `fast` mode CPU tier does not apply this clamp yet (see Known issues). Use
+  `nvme-exact` when outputs must match exllamav3.
+
+Raw files: `results/P003-nvme-image-smoke/` (published image), `results/N119-S2a-55g/` (`nvme-exact`),
+`results/N119-S3b2-55g/` (`nvme`), `results/N119-S3a-55g/`, `results/N119-S3-decode-kl/decode_kl.json`; each arm has `cmd.txt` (the exact `docker run`), `sweep.json`, `score.json`,
+`greedy.json`, `server_info.json`, memcg / MemAvailable / VRAM at start, ready and end, the kernel-log guard before and
+after, and tier stats.
+
 ## Reproduce
 
 Everything the numbers depend on, pinned:
@@ -142,6 +276,8 @@ Everything the numbers depend on, pinned:
 | model | `turboderp/GLM-5.3-Flash-exl3`, branch `3.05bpw`, revision `332ab457b709b7ba30dd9a448be5de03b80a7ac9` (125.3 GB) |
 | image | `ghcr.io/0xsero/glm53-flash-offload@sha256:bb633b0bcb85573ad40b6c408af5e1036ae062c593e42479f4e4d2ab521e551d` (tag v3, built from local-ai-images `main` by run [36868783920](https://github.com/0xSero/local-ai-images/actions/runs/36868783920), SLSA provenance attested from `refs/heads/main`; previous digest `1159044a…` = repo `c4b9160`, half-speed streaming), built by [0xSero/local-ai-images](https://github.com/0xSero/local-ai-images) `glm53-flash-offload/Dockerfile` |
 | base | `lmsysorg/sglang@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f` (v0.5.20, SGLang commit 94602c9; CUDA 13.0.3, torch 2.13.0+cu130, Triton 3.7.1, transformers 5.12.1) |
+| image, NVMe modes | `ghcr.io/0xsero/glm53-flash-offload@sha256:82eef823f95b89fcb14b8379d45315d3a632aaa054fb04e3418b62a3ec2ff1ff` (tag v4-nvme, built from local-ai-images `main` `8f60eec` by run [37592054786](https://github.com/0xSero/local-ai-images/actions/runs/37592054786), SLSA provenance attested from `refs/heads/main`); this repo at `92698604575f789ecc7a2340480413567e6d05c6` (merge of PR #2). Same base and exllamav3 |
+| NVMe store | `scripts/pack_glm53_store.py` (`IMAGE pack-store`): 43 layers (42 MoE + MTP) x 288 records of 9,474,048 B = 117,326,610,432 B, layer-major, 4096-aligned, sha256 per record in the manifest |
 | exllamav3 | v1.5.1 = commit `958ec933361b24eb8426ec7222e5b0062a679dcd`, built with `TORCH_CUDA_ARCH_LIST=8.6` |
 | this repo | `fe97bcf846347d035859a0610cebbb707fa36caa` for that digest (the image's `GLM53_COMMIT`, also in `/opt/glm53/COMMIT`); later commits here are docs/results only unless a new digest is listed |
 | Triton picks | `data/triton_pin_exact.json` (7 FLA/KDA kernels) |
@@ -155,6 +291,8 @@ python3 bench/score_ref_panel.py --url http://127.0.0.1:30000 --panel reference/
 # speed: the protocol behind every table here (P2)
 python3 bench/sweep.py --url http://127.0.0.1:30000 --card rtx-3090-24gb/glm-5.3-flash-offload --template glm \
   --config "<digest> fast" --prefill 8192 32768 --conc 1 2 4 --reps 3 --dec-reps 2 --no-early-exit --out sweep.json
+# NVMe mode: the same two commands against the NVMe-mode server; its paired CPU-lane decode check is
+#   docker run --rm <the NVMe run flags> -v $PWD:/out IMAGE decode-kl --kl-out /out/decode_kl.json   (bench/decode_kl_nv.py)
 # decode quality of the CPU tier: paired tier-off / tier-on decode in one process (stop the server first; ~20 min)
 docker run --rm --gpus '"device=0"' --ulimit memlock=-1 --shm-size 16g -v <model dir>:/models -v $PWD:/out \
   ghcr.io/0xsero/glm53-flash-offload@sha256:bb633b0bcb85573ad40b6c408af5e1036ae062c593e42479f4e4d2ab521e551d decode-kl --kl-out /out/decode_kl.json
@@ -169,13 +307,41 @@ exllamav3 1.5.1 on the same checkpoint (8 prompts, top-20 logprobs at every posi
 ## Image smoke
 
 The published image is tested on the measured host exactly as in [Run](#run) (clean pull by digest, bridge
-network, model mounted at `/models`): health, chat, tool call, the teacher-forced panel and the P2 sweep. Results are
-recorded here per digest.
+network, model mounted at `/models`; NVMe mode: as in [Run (NVMe mode)](#run-nvme-mode), host network, store at
+`/nvx`): health, chat, tool call, the teacher-forced panel and the P2 sweep. Results are recorded here per digest.
 
 | digest | panel top-1 / KL | prefill 8k / 32k | decode C1 / C2 / C4 (aggregate) | C1 at 32k | ready after |
 |---|---|---|---|---|---|
+| `82eef823` (repo `9269860`, **`nvme` mode**, `--memory 55g`) | 1.0000 / 0 (2,154 positions) | 545.3 / 767.4 tok/s | 13.70 / 14.38 / 15.24 tok/s | 12.40 tok/s | 76 s |
 | `bb633b0b` (repo `fe97bcf`, fast mode) | 1.0000 / 0 (2,154 positions) | 700.2 / 958.0 tok/s | 28.88 / 31.27 / 35.00 tok/s | 27.56 tok/s | 201 s |
 | `1159044a` (repo `c4b9160`, fast mode) | 1.0000 / 0 (2,154 positions) | 707 / 953 tok/s | 29.03 / 31.38 / 34.88 tok/s | 27.85 tok/s | 141 s |
+
+Run P003, 2026-10-07, digest `82eef823` (tag v4-nvme, `GLM53_MODE=nvme`). Anonymous `docker pull` of the digest
+(`/opt/glm53/COMMIT` = `9269860`), `verify-store` (12,384 records, 117.3 GB `O_DIRECT` re-read + sha256 in 11 s, 0
+bad), then the [Run (NVMe mode)](#run-nvme-mode) command: `--memory 55g --memory-swap 55g --cpuset-cpus 2-39`, host
+network, store at `/nvx` read-only. Ready after 76 s (loaded in 65.5 s). Chat, no-thinking chat and an OpenAI tool
+call (`get_weather` with `{"city": "Paris"}`) answered correctly. `bench/stream_rate.py` passed on both endpoints
+(half-share 0.51 / 0.53, last-second share 0.6 %). Panel 1.0000 / KL 0. `/nv_verify` byte checks after the panel and
+after the sweep: 0 bad. Container memory: `memory.peak` 51.1 GiB of the 55 GiB cap; `memory.swap.max` 0. Kernel-log
+guard (no Completion-Wait timeouts, Link Down, Card not present, reboot-needed or non-corrected hardware errors, no
+D-state khugepaged/kcompactd) clean before, mid-run and after.
+
+The sweep measured 5-8 % below the campaign arm S3b2 (583 / 812, 14.85 / 15.62 / 16.27, 13.46). The host was busier:
+a Sunshine desktop stream was encoding on the same GPU (35 % of a core, 218 MiB more VRAM in use before start, so the
+cache got 1,280 slots instead of 1,312), and another agent started a B70 job at 12:05, during the last 32k round. To
+separate the image from the host, the same 8k C1 + 32k C1 sweep then ran twice back to back under the same
+conditions: the published image (`A`) and the campaign S3b2 setup (`B`: `bb633b0b` with the S3b2 code snapshot and
+extensions mounted, S3b2 env). Both arms got 1,280 slots and both ran while the B70 job was active.
+
+| run (same host state, back to back) | prefill 8k | decode C1 | C1 at 32k |
+|---|---|---|---|
+| A: published `82eef823`, README command | 529.0 tok/s | 13.11 tok/s | 12.44 tok/s |
+| B: campaign S3b2 setup | 529.8 tok/s | 12.16 tok/s | 11.62 tok/s |
+
+The image is at or above the campaign build on the same host state, so the gap to S3b2 comes from the host
+conditions, not the image. The S3b2 table above stays the measured reference. A re-measure with the desktop
+stream and the other slots idle is pending. Raw files, including both scripts:
+[`results/P003-nvme-image-smoke/`](results/P003-nvme-image-smoke/) (`ab/` for the A/B).
 
 Run P002b, 2026-10-01, digest `bb633b0b` (streaming fix), README command on a bridge network. The host had one RTX 3090
 left, device 0, which also drives the display (~1 GB less free VRAM than P001's headless GPU 1); every number is within
@@ -220,6 +386,13 @@ this digest (see Known issues), not cache re-warm. Raw files:
 | `GLM53_K_HCFUSE`, `GLM53_K_FTSPLIT`, `GLM53_K_OVL` | `1` / `0` | fused hyper-connection decode sites; fast CPU-tier split kernel; shared expert on a side stream |
 | `GLM53_EC_ELASTIC_GB` | `10` | cache memory handed back for prefill activations and staging, re-taken for decode |
 | `GLM53_TRITON_PIN` | `data/triton_pin_exact.json` | fixed KDA autotune picks (empty = autotune) |
+| `GLM53_NV_STORE` | `/nvx/glm53_flash_exl3_3.05bpw_experts.bin` | NVMe modes: the packed store (`.json` manifest next to it) |
+| `GLM53_NV_RAM_GB` | `auto` | NVMe modes: RAM tier size; `auto` = container `memory.max` - current - `GLM53_NV_MARGIN_GB` (3) - prefill ring - `-rcs` reserve - 0.3 GiB |
+| `GLM53_NV_CPU` | `1` (`nvme`) / `0` (`nvme-exact`) | AVX2 CPU lane on RAM-resident cold decode picks (`GLM53_NV_CLAMP=1`: SwiGLU clamp) |
+| `GLM53_NV_CPU_CPUS`, `GLM53_MAIN_CPUS`, `GLM53_NV_CTL_CPU`, `GLM53_NV_READER_CPUS`, `GLM53_NV_THREADS` | `2-23`, `24`, `25`, `26-39`, `16` | NVMe modes: CPU lane threads, GPU-feeding main thread, controller thread, NVMe reader threads |
+| `GLM53_NV_PREFETCH`, `GLM53_NV_VRING`, `GLM53_NV_PF_RING` | `1`, `24`, `192` (`nvme`) | layer-ahead NVMe prefetch of predicted picks; VRAM victim ring; prefill NVMe FIFO ring (slots) |
+| `GLM53_MAX_RQ_TOKENS` | `4096` (`nvme`) / unset | exllamav3 `max_rq_tokens`: page-allocation round per job (not an output cap); lets concurrent jobs decode together |
+| `GLM53_EC_MAX_SLOTS` | unset | cap on GPU expert-cache slots; the NVMe Run command sets 1376 (GPU shared with a desktop) |
 | `PORT`, `SERVED_NAME`, `GLM53_ARGS` | `30000`, `glm-5.3-flash`, empty | server port, model id, extra args |
 
 **Sizing the CPU tier for another CPU.** The tier is limited by per-core decode throughput, not DRAM (SMT, prefetch
@@ -279,13 +452,18 @@ glm53/triton_pin.py     Triton autotune pinning for the KDA kernels (+ make_trit
 glm53/k_hcfuse.py       fused hyper-connection decode sites (CUDA source inline)
 glm53/k_ftsplit.py      fast CPU-tier split kernel loader (kernels/k110/ft_split_fast.cu)
 glm53/k_overlap.py      shared expert on a side stream in decode
+glm53/nv_tier.py        NVMe modes: loader that skips the expert bytes, store manifest, O_DIRECT reader (N116 S1 engine)
+glm53/nv2.py            NVMe modes: RAM tier, device-side-stall engine, prefetch, CPU lane, verify (N119)
+kernels/nv2/            nv2_host.cpp (controller, readers, CPU lane), nv2_dev.cu (publish / step / copy kernels), ft_core.h
 kernels/cpu_avx2/       ft_core.h (AVX2 kernels, pool), ft_tier_ext.cpp (host worker), ft_tier_cu.cu (GPU split/combine)
 data/                   routing stats, exllamav3 MoE tune cache, Triton autotune pins
 docker/                 Dockerfile (local build), entrypoint.sh
 scripts/install.sh      pre-build the extensions
-bench/                  sweep.py (speed protocol), score_ref_panel.py (quality), decode_kl.py (paired CPU-tier decode check)
+scripts/pack_glm53_store.py  build / verify / byte-compare the NVMe expert store (IMAGE pack-store / verify-store)
+bench/                  sweep.py (speed protocol), score_ref_panel.py (quality), decode_kl.py (paired CPU-tier decode check),
+                        decode_kl_nv.py (the same for the NVMe CPU lane), stream_rate.py (streaming delivery)
 reference/              exllamav3 reference panel for GLM-5.3-Flash 3.05bpw
-results/                raw JSONs of the measured runs (G067, C056, G066a, C052e) and of the image smoke (P001)
+results/                raw JSONs of the measured runs (G067, C056, G066a, C052e, N119-*) and of the image smokes (P001, P002b, P003)
 ```
 
 Updating the image: a fix here is a new commit; the image build in
