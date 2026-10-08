@@ -150,7 +150,7 @@ void init_tables()
         const int q0 = 3 * g - 2;
         int win[16];                 // window byte -> mem byte
         if (g == 0) { for (int b = 0; b < 4; ++b) win[b] = 92 + b; for (int b = 4; b < 16; ++b) win[b] = b - 4; WOFF[g] = -1; }
-        else { const int L = 4 * (q0 / 4); for (int b = 0; b < 16; ++b) win[b] = L + b; WOFF[g] = L; }
+        else { const int L = std::min(4 * (q0 / 4), 80); /* window clamp: never read past the 96-byte tile */ for (int b = 0; b < 16; ++b) win[b] = L + b; WOFF[g] = L; }
         auto wpos = [&](int q) -> int {
             if (q >= 96) return -1;  // only ever the unused third byte of g=31 lane 7
             const int m = mem_of_stream(q);
@@ -195,7 +195,7 @@ __attribute__((always_inline)) inline __m256 decode8(const uint8_t* tile, const 
     }
     else
     {
-        constexpr int L = 4 * ((3 * g - 2) / 4);
+        constexpr int L = 4 * ((3 * g - 2) / 4) < 80 ? 4 * ((3 * g - 2) / 4) : 80;   // window clamp: groups 29-31 would read 4-8 B past the tile
         win = _mm256_broadcastsi128_si256(_mm_loadu_si128(reinterpret_cast<const __m128i*>(tile + L)));
     }
     const __m256i st = _mm256_and_si256(_mm256_srlv_epi32(
@@ -216,7 +216,7 @@ __attribute__((always_inline)) inline __m256i decode8p(const uint8_t* tile, cons
     }
     else
     {
-        constexpr int L = 4 * ((3 * g - 2) / 4);
+        constexpr int L = 4 * ((3 * g - 2) / 4) < 80 ? 4 * ((3 * g - 2) / 4) : 80;   // window clamp: groups 29-31 would read 4-8 B past the tile
         win = _mm256_broadcastsi128_si256(_mm_loadu_si128(reinterpret_cast<const __m128i*>(tile + L)));
     }
     const __m256i st = _mm256_and_si256(_mm256_srlv_epi32(
