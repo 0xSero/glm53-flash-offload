@@ -1,0 +1,168 @@
+--- glm53a.orig/nv2.py	2026-10-08 03:09:01
++++ glm53cap/nv2.py	2026-10-08 11:44:13
+@@ -75,6 +75,10 @@
+ class Nv2:
+     def __init__(self, pool):
+         e = ext()
++        self.cap = None
++        if os.environ.get("GLM53_N134_CAP"):
++            m0 = pool.mods[0]
++            self.cap = Capture(os.environ["GLM53_N134_CAP"], len(pool.mods), m0.hidden_size, pool.device)
+         sz = e.sizes()
+         self.SREQ, self.SREP, self.SLOG, self.MAXU, self.MAXP, self.RQ, self.LG, self.LR, self.MAXB, HCN, DCN, STN, DBG, *rest = sz
+         self.DBG, self.DBGW = DBG, (rest[0] if rest else 8)
+@@ -201,6 +205,8 @@
+                 ev.record(torch.cuda.current_stream(self.dev))
+         self.bg = cf.ThreadPoolExecutor(1, thread_name_prefix="nv2-stage")
+         e.start()
++        if self.cap is not None:
++            self.cap.start(e)
+         live = g("GLM53_NV_LIVE", "")
+         e.attr_start(self.a["dbg"], live, int(g("GLM53_NV_IDLE_MS", "50")))
+         self.live_fields = list(e.live_fields())
+@@ -294,10 +300,14 @@
+                 s = s.long().contiguous()
+             p._ec_hits(li, s)
+             self.st["staged_calls"] += 1
++            if self.cap is not None:
++                self.cap.boundary()
+             return sel, w, False
+         if p.stage_n:
+             p._stage_hook_nv2(li, n)
+         dec = n <= p.admit_max
++        if self.cap is not None:
++            self.cap.layer(li, sel, w, z, bsz, dec)
+         s = sel.reshape(-1)
+         if s.dtype != torch.long or not s.is_contiguous():
+             s = s.long().contiguous()
+@@ -589,6 +599,8 @@
+                                    if k not in ("steps_est", "tokens_est", "picks")}
+         if getattr(self, "selftest", None) is not None:
+             out["cpu_selftest"] = self.selftest
++        if self.cap is not None:
++            out["n134_capture"] = self.cap.stats()
+         out["prefetch_ctl"] = dict(zip(["pf_lo", "pf_cap", "skipped", "reads_inflight"], ext().pf_stats()))
+         out["read_ms_mean"] = round(c["read_ms_x1000"] / 1000 / max(1, c["reads"]), 3)
+         try:
+@@ -600,8 +612,121 @@
+         except Exception as ex:
+             out["latency"] = str(ex)
+         return out
++
++
++class Capture:
++    """N134: per decode token and MoE layer, dump the layer's MoE input row (fp16), routed top-k ids and weights, and the
++    tier of each pick at plan time (host side, nv2_host cap_*). Rows go D2D into a per-token device row, then one D2H per
++    token into a pinned double-buffered chunk; a writer thread appends full chunks to <dir>/{z,sel,w,meta}.bin and the
++    host tier records to <dir>/tier.bin. Only bsz == 1 decode calls are kept (the C1 capture client); others are counted.
++    meta per token (int64): token index, decode-call index of layer 0, boundary flag (a prefill / small call came
++    before this token), wall ns."""
++    def __init__(self, d, L, H, dev, chunk=256):
++        import queue
++        os.makedirs(d, exist_ok=True)
++        self.d, self.L, self.H, self.dev, self.chunk = d, L, H, dev, chunk
++        self.dz = torch.zeros((L, H), dtype=torch.half, device=dev)
++        self.ds = torch.full((L, 8), -1, dtype=torch.int16, device=dev)
++        self.dw = torch.zeros((L, 8), dtype=torch.half, device=dev)
++        mk = lambda shape, dt: torch.zeros(shape, dtype=dt).pin_memory()
++        self.hz = [mk((chunk, L, H), torch.half) for _ in range(2)]
++        self.hs = [mk((chunk, L, 8), torch.int16) for _ in range(2)]
++        self.hw = [mk((chunk, L, 8), torch.half) for _ in range(2)]
++        self.meta = [np.zeros((chunk, 4), np.int64) for _ in range(2)]
++        self.b, self.n = 0, 0                  # active buffer, tokens in it
++        self.tok, self.calls, self.cur_li = 0, 0, -1
++        self.call0, self.bnd, self.pending_bnd, self.skip = 0, 0, 1, collections.Counter()
++        self.q = queue.Queue()
++        self.free = [threading.Event(), threading.Event()]
++        for f in self.free:
++            f.set()
++        self.ok = True
++        self.e = None
++        self.wt = threading.Thread(target=self._writer, daemon=True)
++        self.wt.start()
++        NT._log(f"N134 capture -> {d}: {L} layers x {H}, chunk {chunk} tokens ({2 * chunk * L * H * 2 / GiB:.2f} GiB pinned)")
+ 
++    def start(self, e):
++        self.e = e
++        e.cap_set(1)
+ 
++    def boundary(self):
++        self.pending_bnd = 1
++
++    def layer(self, li, sel, w, z, bsz, dec):
++        if not dec:
++            self.pending_bnd = 1
++            return
++        call = self.calls
++        self.calls += 1
++        if bsz != 1 or sel.shape[-1] != 8:
++            self.skip["bsz%d" % bsz] += 1
++            self.cur_li = -1
++            self.pending_bnd = 1               # a small prefill chunk (or a batch): the next bsz-1 token starts a new run
++            return
++        if li == 0:
++            if self.pending_bnd and self.n:
++                self.flush()                   # a new request: write the previous one out (the last request needs a follow-up)
++            self.cur_li, self.call0 = 0, call
++            self.bnd, self.pending_bnd = self.pending_bnd, 0
++        elif li != self.cur_li + 1:
++            self.skip["order"] += 1
++            self.cur_li = -1
++            return
++        self.cur_li = li
++        self.dz[li].copy_(z.reshape(-1)[: self.H])
++        self.ds[li].copy_(sel.reshape(-1))
++        self.dw[li].copy_(w.reshape(-1))
++        if li == self.L - 1:
++            b, i = self.b, self.n
++            self.hz[b][i].copy_(self.dz, non_blocking=True)
++            self.hs[b][i].copy_(self.ds, non_blocking=True)
++            self.hw[b][i].copy_(self.dw, non_blocking=True)
++            self.meta[b][i] = (self.tok, self.call0, self.bnd, time.time_ns())
++            self.tok += 1
++            self.n += 1
++            self.cur_li = -1
++            if self.n == self.chunk:
++                self.flush()
++
++    def flush(self):
++        if self.n == 0:
++            return
++        ev = torch.cuda.Event()
++        ev.record(torch.cuda.current_stream(self.dev))
++        self.free[self.b].clear()
++        self.q.put((self.b, self.n, ev))
++        self.b, self.n = 1 - self.b, 0
++        self.free[self.b].wait()               # the writer is done with the other buffer before it is reused
++
++    def _writer(self):
++        fz = open(os.path.join(self.d, "z.bin"), "ab"); fs = open(os.path.join(self.d, "sel.bin"), "ab")
++        fw = open(os.path.join(self.d, "w.bin"), "ab"); fm = open(os.path.join(self.d, "meta.bin"), "ab")
++        ft = open(os.path.join(self.d, "tier.bin"), "ab")
++        while True:
++            b, n, ev = self.q.get()
++            try:
++                ev.synchronize()
++                fz.write(self.hz[b][:n].numpy().tobytes()); fs.write(self.hs[b][:n].numpy().tobytes())
++                fw.write(self.hw[b][:n].numpy().tobytes()); fm.write(self.meta[b][:n].tobytes())
++                if self.e is not None:
++                    ft.write(self.e.cap_drain().numpy().tobytes())
++                for f in (fz, fs, fw, fm, ft):
++                    f.flush()
++            except Exception as ex:
++                self.ok = False
++                print(f" !! N134 capture writer: {ex}", flush=True)
++            finally:
++                self.free[b].set()
++
++    def stats(self):
++        return {"tokens": self.tok, "decode_calls": self.calls, "skipped": dict(self.skip), "buffered": self.n, "ok": self.ok,
++                "host_records": int(self.e.cap_count()) if self.e is not None else None, "dir": self.d,
++                "json": {"L": self.L, "H": self.H, "z": "float16 [tok, L, H]", "sel": "int16 [tok, L, 8]",
++                         "w": "float16 [tok, L, 8]", "meta": "int64 [tok, 4] = tok, call0, boundary, wall_ns",
++                         "tier": "int32 stream of (li, nu, ntok, key[nu], cls[nu]); cls 0 vram 1 ram 2 vring 3 inflight 4 nvme"}}
++
++
+ def attach_pool(pool):
+     global NV
+     nd = NT._drop_checkpoint_cache()

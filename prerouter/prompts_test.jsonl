@@ -1,0 +1,23 @@
+{"cat": "knowledge", "thinking": false, "messages": [{"role": "user", "content": "How does GPS achieve meter-level accuracy, including relativistic corrections?"}], "id": "n134-001"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Explain what this Python does and find the bug:\n\n```python\ndef chunks(xs, n):\n    return [xs[i:i+n] for i in range(0, len(xs)-n, n)]\n```"}], "id": "n134-007"}
+{"cat": "structured", "thinking": false, "messages": [{"role": "user", "content": "Write an OpenAPI 3.0 snippet for a POST /users endpoint with validation rules and error responses."}], "id": "n134-015"}
+{"cat": "chat", "thinking": false, "messages": [{"role": "user", "content": "I want to start running. Can you give me a beginner 8-week plan?"}], "id": "n134-029"}
+{"cat": "writing", "thinking": true, "messages": [{"role": "user", "content": "Write a product description for a handmade ceramic coffee mug, warm and concise."}], "id": "n134-044"}
+{"cat": "longctx", "thinking": false, "long": {"files": ["expert_cache.py"], "ask": "Write unit tests (pytest) for the CLOCK cache logic in this module. Mock out CUDA where needed."}, "id": "n134-054"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Write a minimal Makefile for a C project with src/ and include/ directories, automatic dependency generation, and debug/release targets."}], "id": "n134-057"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "A snail climbs 3 meters up a 20 meter well each day and slides back 2 meters each night. On which day does it get out?"}], "id": "n134-059"}
+{"cat": "longctx", "thinking": false, "long": {"files": ["nv2.py", "expert_cache.py"], "ask": "Explain how these two Python modules cooperate during decode. Then propose three simplifications."}, "id": "n134-065"}
+{"cat": "multilingual-fr", "thinking": false, "messages": [{"role": "user", "content": "Rédige une lettre de motivation pour un poste de développeur web junior."}], "id": "n134-068"}
+{"cat": "structured", "thinking": true, "messages": [{"role": "user", "content": "Produce a CSV with 15 rows of plausible weather data for a week in two cities, with columns date, city, high_c, low_c, precip_mm."}], "id": "n134-070"}
+{"cat": "longctx", "thinking": true, "long": {"files": ["k_hcfuse.py", "k_overlap.py", "triton_pin.py"], "ask": "Summarize each of these files in one paragraph and describe how they would be tested."}, "id": "n134-075"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "Find the eigenvalues and eigenvectors of the matrix [[2, 1], [1, 2]] and explain their geometric meaning."}], "id": "n134-078"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Implement an LRU cache in Rust with O(1) get and put, generic over key and value. Explain the ownership choices."}], "id": "n134-087"}
+{"cat": "longctx", "thinking": false, "long": {"files": ["serve.py"], "ask": "Document this server's HTTP API as a reference table, then point out any input-validation gaps."}, "id": "n134-091"}
+{"cat": "writing", "thinking": false, "messages": [{"role": "user", "content": "Write a dialogue between Socrates and a modern software engineer about whether AI can know things."}], "id": "n134-105"}
+{"cat": "writing", "thinking": false, "messages": [{"role": "user", "content": "Write a speech for a high school graduation about failure and curiosity."}], "id": "n134-115"}
+{"cat": "knowledge", "thinking": false, "messages": [{"role": "user", "content": "Explain how a CPU cache hierarchy works and why data layout matters for performance."}], "id": "n134-120"}
+{"cat": "longctx", "thinking": false, "long": {"files": ["ft_core.h"], "ask": "Explain the numerical kernels in this header and how the AVX2 code paths are organized."}, "id": "n134-121"}
+{"cat": "knowledge", "thinking": true, "messages": [{"role": "user", "content": "Explain the history and significance of the Silk Road."}], "id": "n134-125"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Implement a trie in Python with insert, search, starts_with and delete, plus unit tests with pytest."}], "id": "n134-126"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "What is the probability that in a group of 23 people at least two share a birthday? Derive it."}], "id": "n134-143"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Write a bash script that finds the 10 largest files under a directory, skipping .git folders, and prints human-readable sizes."}], "id": "n134-147"}

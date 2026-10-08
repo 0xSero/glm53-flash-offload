@@ -1,0 +1,80 @@
+--- glm53a.orig/nv2_host.cpp	2026-10-07 07:39:03
++++ glm53cap/nv2_host.cpp	2026-10-08 11:03:29
+@@ -213,6 +213,9 @@
+     int st_qd = 24;
+     bool st_active = false;
+     cudaStream_t wb_stream = nullptr;
++    // N134 capture: per decode request, the tier of each unique pick at plan time (0 VRAM, 1 RAM, 2 RAM via VRAM ring,
++    // 3 read already in flight, 4 new NVMe read). Record: li, nu, ntok, key[nu], cls[nu]. Drained by Python (cap_drain).
++    std::mutex cap_mu; std::vector<int32_t> cap_buf; int cap_on = 0; long long cap_n = 0;
+ 
+     // ---------------- LRU over slots ----------------
+     void lru_remove(int s)
+@@ -426,19 +429,23 @@
+         const bool cpu = dec && pol.cpu_on && cpu_ready && r.np <= MAXP && r.ntok <= MAXB;
+         V.clear(); Rm.clear(); N.clear();
+         int nnv = 0;
++        const bool capt = dec && cap_on;
++        int8_t capc[MAXU];
+         for (int u = 0; u < r.nu; ++u)
+         {
+             const int key = r.key[u];
+-            if (r.cls[u] == LN_VRAM) { p.lane[u] = LN_VRAM; V.push_back({ u, key, r.cnt[u], 0, 0 }); continue; }
++            if (r.cls[u] == LN_VRAM) { p.lane[u] = LN_VRAM; V.push_back({ u, key, r.cnt[u], 0, 0 }); if (capt) capc[u] = 0; continue; }
+             if (kst[key] == KS_RES)
+             {
+                 lru_touch(slot_of[key]);
+-                if (kvr[key] >= 0) { p.lane[u] = LN_RAM; C.lane_zc++; C.vring_hits++; if (dec) C.ram++; continue; }   // VRAM-ring backed: GPU lane
++                if (kvr[key] >= 0) { p.lane[u] = LN_RAM; C.lane_zc++; C.vring_hits++; if (dec) C.ram++; if (capt) capc[u] = 2; continue; }   // VRAM-ring backed: GPU lane
+                 Rm.push_back({ u, key, r.cnt[u], 0, score[key] });
++                if (capt) capc[u] = 1;
+             }
+             else
+             {
+                 double a = 0;
++                if (capt) capc[u] = kst[key] == KS_INFLIGHT ? 3 : 4;
+                 if (kst[key] == KS_INFLIGHT) { a = karr[key]; C.inflight_hit++; }
+                 else if (!start_read(key, true, &a)) { a = 1e9; hc[HC_ERR] = 19; fprintf(stderr, "nv2: no RAM slot for key %d\n", key); }
+                 N.push_back({ u, key, r.cnt[u], a - t0, score[key] });
+@@ -446,6 +453,14 @@
+             }
+         }
+         if (dec) { C.picks += r.nu; C.vram += V.size(); C.ram += Rm.size(); C.nvme += N.size(); }
++        if (capt)
++        {
++            std::lock_guard<std::mutex> lk(cap_mu);
++            cap_buf.push_back(r.li); cap_buf.push_back(r.nu); cap_buf.push_back(r.ntok);
++            for (int u = 0; u < r.nu; ++u) cap_buf.push_back(r.key[u]);
++            for (int u = 0; u < r.nu; ++u) cap_buf.push_back(capc[u]);
++            cap_n++;
++        }
+         double g = V.empty() ? 0.0 : pol.g0 + pol.thit * V.size();
+         double c = (cpu && (!Rm.empty() || !N.empty())) ? pol.ca : 0.0;
+         int ncpu = 0;
+@@ -1148,6 +1163,16 @@
+     return v;
+ }
+ void live_note(int64_t k, int64_t v) { if (G && k >= 0 && k < 16) G->note[k] += v; }
++void cap_set(int64_t on) { G->cap_on = int(on); }
++at::Tensor cap_drain()
++{
++    std::vector<int32_t> v;
++    { std::lock_guard<std::mutex> lk(G->cap_mu); v.swap(G->cap_buf); }
++    auto t = torch::empty({ int64_t(v.size()) }, torch::kInt32);
++    if (!v.empty()) memcpy(t.data_ptr<int32_t>(), v.data(), v.size() * 4);
++    return t;
++}
++int64_t cap_count() { std::lock_guard<std::mutex> lk(G->cap_mu); return G->cap_n; }
+ std::vector<int64_t> pf_stats() { return { G->pol.pf_lo, G->pol.pf_cap, G->pf_skipped.load(), G->nv_inflight.load() }; }
+ std::vector<int64_t> attr()
+ {
+@@ -1288,6 +1313,9 @@
+     m.def("stage_layer", &stage_layer, py::call_guard<py::gil_scoped_release>());
+     m.def("stage_end", &stage_end, py::call_guard<py::gil_scoped_release>());
+     m.def("set_stage_qd", &set_stage_qd);
++    m.def("cap_set", &cap_set);
++    m.def("cap_drain", &cap_drain);
++    m.def("cap_count", &cap_count);
+     m.def("shutdown", &shutdown, py::call_guard<py::gil_scoped_release>());
+     m.def("sizes", [] { return std::vector<int64_t>{ (int64_t) sizeof(Req), (int64_t) sizeof(Rep), (int64_t) sizeof(LogE), MAXU, MAXP, RQ, LG, LR, MAXB, HC_N, DC_N, ST_N, DBG, DBGW }; });
+     dev_bind(m);

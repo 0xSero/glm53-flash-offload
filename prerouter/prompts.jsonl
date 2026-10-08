@@ -1,0 +1,153 @@
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "Show that there are infinitely many primes, then explain why there are arbitrarily long gaps between consecutive primes."}], "id": "n134-000"}
+{"cat": "knowledge", "thinking": false, "messages": [{"role": "user", "content": "How does GPS achieve meter-level accuracy, including relativistic corrections?"}], "id": "n134-001"}
+{"cat": "chat", "thinking": true, "messages": [{"role": "user", "content": "I've been feeling unmotivated at work lately. Any practical suggestions?"}], "id": "n134-002"}
+{"cat": "multiturn", "thinking": true, "messages": [{"role": "user", "content": "What's the capital of Canada?"}, {"role": "assistant", "content": "Ottawa."}, {"role": "user", "content": "Why not Toronto or Montreal? Give the history."}], "id": "n134-003"}
+{"cat": "knowledge", "thinking": true, "messages": [{"role": "user", "content": "Describe the main schools of thought in moral philosophy and how they would handle the trolley problem."}], "id": "n134-004"}
+{"cat": "knowledge", "thinking": false, "messages": [{"role": "user", "content": "What is the Riemann hypothesis and why does it matter?"}], "id": "n134-005"}
+{"cat": "chat", "thinking": true, "messages": [{"role": "user", "content": "How do I deal with a noisy upstairs neighbor?"}], "id": "n134-006"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Explain what this Python does and find the bug:\n\n```python\ndef chunks(xs, n):\n    return [xs[i:i+n] for i in range(0, len(xs)-n, n)]\n```"}], "id": "n134-007"}
+{"cat": "multilingual-ja", "thinking": false, "messages": [{"role": "user", "content": "東京で3日間観光する旅行プランを立ててください。"}], "id": "n134-008"}
+{"cat": "writing", "thinking": true, "messages": [{"role": "user", "content": "Write a eulogy for a beloved family dog named Biscuit."}], "id": "n134-009"}
+{"cat": "writing", "thinking": false, "messages": [{"role": "user", "content": "Write a poem about autumn in the style of Mary Oliver."}], "id": "n134-010"}
+{"cat": "multilingual-zh", "thinking": false, "messages": [{"role": "user", "content": "请比较一下唐朝和宋朝在经济和文化上的主要区别。"}], "id": "n134-011"}
+{"cat": "multiturn", "thinking": true, "messages": [{"role": "system", "content": "You are a patient math tutor. Ask guiding questions instead of giving answers outright."}, {"role": "user", "content": "I don't get why the derivative of x^2 is 2x."}], "id": "n134-012"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "Three people check into a hotel room that costs $30. They each pay $10. The clerk realizes the room is $25 and gives $5 to the bellboy, who keeps $2 and returns $1 to each. Where is the missing dollar?"}], "id": "n134-013"}
+{"cat": "knowledge", "thinking": true, "messages": [{"role": "user", "content": "Explain how vaccines based on mRNA differ from traditional vaccines."}], "id": "n134-014"}
+{"cat": "structured", "thinking": false, "messages": [{"role": "user", "content": "Write an OpenAPI 3.0 snippet for a POST /users endpoint with validation rules and error responses."}], "id": "n134-015"}
+{"cat": "knowledge", "thinking": true, "messages": [{"role": "user", "content": "Explain the causes of inflation and the tools central banks use against it."}], "id": "n134-016"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "Explain why 0.999... equals 1 using three different arguments."}], "id": "n134-017"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "What is the expected number of rolls of a fair die to see all six faces? Derive it."}], "id": "n134-018"}
+{"cat": "knowledge", "thinking": true, "messages": [{"role": "user", "content": "How do mixture-of-experts language models route tokens, and what are the trade-offs of top-k routing?"}], "id": "n134-019"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "Prove by induction that 1^3 + 2^3 + ... + n^3 = (n(n+1)/2)^2."}], "id": "n134-020"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "If you fold a sheet of paper 0.1 mm thick in half 42 times, how thick would it be? Is it physically possible?"}], "id": "n134-021"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "A password has 8 characters from 62 symbols. How long would a brute force take at 10^10 guesses per second? Compare with 12 characters."}], "id": "n134-022"}
+{"cat": "writing", "thinking": false, "messages": [{"role": "user", "content": "Rewrite this sentence in five different tones (formal, casual, sarcastic, poetic, legal): 'The meeting is moved to Thursday.'"}], "id": "n134-023"}
+{"cat": "chat", "thinking": false, "messages": [{"role": "user", "content": "Give me a weekly vegetarian meal plan that is high in protein."}], "id": "n134-024"}
+{"cat": "chat", "thinking": false, "messages": [{"role": "user", "content": "What are some good habits for keeping a small apartment tidy?"}], "id": "n134-025"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "A train leaves city A at 60 km/h. Two hours later another leaves A on the same track at 90 km/h. When and where does the second catch the first?"}], "id": "n134-026"}
+{"cat": "knowledge", "thinking": false, "messages": [{"role": "user", "content": "What is CRISPR-Cas9 and how is it used to edit genes?"}], "id": "n134-027"}
+{"cat": "multilingual-es", "thinking": false, "messages": [{"role": "user", "content": "Escribe un cuento corto sobre un gato que quería ser astronauta."}], "id": "n134-028"}
+{"cat": "chat", "thinking": false, "messages": [{"role": "user", "content": "I want to start running. Can you give me a beginner 8-week plan?"}], "id": "n134-029"}
+{"cat": "chat", "thinking": true, "messages": [{"role": "user", "content": "How do I politely decline a friend's wedding invitation?"}], "id": "n134-030"}
+{"cat": "chat", "thinking": false, "messages": [{"role": "user", "content": "What are some low-cost hobbies I could pick up this winter?"}], "id": "n134-031"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "Is 2^61 - 1 prime? Explain how you'd check, and what is known about it."}], "id": "n134-032"}
+{"cat": "chat", "thinking": false, "messages": [{"role": "user", "content": "How can I get better at public speaking?"}], "id": "n134-033"}
+{"cat": "writing", "thinking": false, "messages": [{"role": "user", "content": "Summarize the plot of Hamlet in 200 words, then give three themes with one quote each."}], "id": "n134-034"}
+{"cat": "multiturn", "thinking": true, "messages": [{"role": "user", "content": "Explain gradient descent."}, {"role": "assistant", "content": "Gradient descent iteratively moves parameters in the direction of the negative gradient of the loss to reduce it."}, {"role": "user", "content": "Now explain Adam and why it often trains faster, with the update equations."}], "id": "n134-035"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "How many trailing zeros does 1000! have? Show the reasoning."}], "id": "n134-036"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Explain the difference between a mutex and a semaphore with a C++ example of each, and when to use a condition variable."}], "id": "n134-037"}
+{"cat": "knowledge", "thinking": false, "messages": [{"role": "user", "content": "Explain how the transformer architecture works, from tokens to logits, for someone who knows basic linear algebra."}], "id": "n134-038"}
+{"cat": "knowledge", "thinking": true, "messages": [{"role": "user", "content": "Explain quantum entanglement without misleading analogies."}], "id": "n134-039"}
+{"cat": "code", "thinking": false, "messages": [{"role": "user", "content": "Write a Dockerfile for a Python FastAPI app with a multi-stage build, non-root user and a healthcheck."}], "id": "n134-040"}
+{"cat": "chat", "thinking": true, "messages": [{"role": "user", "content": "What are the pros and cons of electric cars today?"}], "id": "n134-041"}
+{"cat": "code", "thinking": false, "messages": [{"role": "user", "content": "Write a Haskell function that computes all permutations of a list, then explain its complexity."}], "id": "n134-042"}
+{"cat": "structured", "thinking": false, "messages": [{"role": "user", "content": "Write a YAML GitHub Actions workflow that runs pytest on Python 3.10-3.12 and uploads coverage."}], "id": "n134-043"}
+{"cat": "writing", "thinking": true, "messages": [{"role": "user", "content": "Write a product description for a handmade ceramic coffee mug, warm and concise."}], "id": "n134-044"}
+{"cat": "code", "thinking": false, "messages": [{"role": "user", "content": "In TypeScript, write a debounce and a throttle utility with correct `this` handling and cancellation."}], "id": "n134-045"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "Solve: the sum of three consecutive odd integers is 87. Find them, then generalize to n consecutive odd integers summing to S."}], "id": "n134-046"}
+{"cat": "knowledge", "thinking": false, "messages": [{"role": "user", "content": "How does a refrigerator work? Explain the thermodynamic cycle."}], "id": "n134-047"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Write a C function that reverses a singly linked list in place, then one that detects a cycle. Include a small main()."}], "id": "n134-048"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "You have 12 coins, one of which is counterfeit and either heavier or lighter. With a balance scale and three weighings, how do you find it and tell whether it is heavier or lighter?"}], "id": "n134-049"}
+{"cat": "knowledge", "thinking": true, "messages": [{"role": "user", "content": "What caused the 2008 financial crisis? Give a structured explanation."}], "id": "n134-050"}
+{"cat": "chat", "thinking": true, "messages": [{"role": "user", "content": "Tell me a fun fact about octopuses and then explain why it's true."}], "id": "n134-051"}
+{"cat": "longctx", "thinking": true, "long": {"files": ["cpu_tier.py", "nv_tier.py"], "ask": "Compare these two modules: what does each do, what do they share, and how would you unify them?"}, "id": "n134-052"}
+{"cat": "code", "thinking": false, "messages": [{"role": "user", "content": "Write a Rust program that reads lines from stdin, counts word frequencies, and prints the top 20 sorted by count."}], "id": "n134-053"}
+{"cat": "longctx", "thinking": false, "long": {"files": ["expert_cache.py"], "ask": "Write unit tests (pytest) for the CLOCK cache logic in this module. Mock out CUDA where needed."}, "id": "n134-054"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Write a SQL query that returns, for each customer, their three most recent orders and the running total of spend. Assume tables customers(id, name) and orders(id, customer_id, created_at, amount)."}], "id": "n134-055"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Write a Python function that parses an ISO-8601 duration string like 'P3DT4H12M' into seconds, with tests."}], "id": "n134-056"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Write a minimal Makefile for a C project with src/ and include/ directories, automatic dependency generation, and debug/release targets."}], "id": "n134-057"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Design a REST API for a small library system (books, members, loans). Give endpoints, payloads and error codes."}], "id": "n134-058"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "A snail climbs 3 meters up a 20 meter well each day and slides back 2 meters each night. On which day does it get out?"}], "id": "n134-059"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "Compute the integral of x * e^(2x) dx and verify by differentiation."}], "id": "n134-060"}
+{"cat": "writing", "thinking": false, "messages": [{"role": "user", "content": "Draft a polite but firm email to a contractor who is three weeks behind schedule."}], "id": "n134-061"}
+{"cat": "multilingual-es", "thinking": true, "messages": [{"role": "user", "content": "Explica en español cómo funciona la fotosíntesis y por qué es importante para la vida en la Tierra."}], "id": "n134-062"}
+{"cat": "multiturn", "thinking": true, "messages": [{"role": "user", "content": "Let's play 20 questions. I'm thinking of an animal. Ask your first question and keep a running list of what you know."}], "id": "n134-063"}
+{"cat": "chat", "thinking": false, "messages": [{"role": "user", "content": "How do I explain to my kids why the sky is blue?"}], "id": "n134-064"}
+{"cat": "longctx", "thinking": false, "long": {"files": ["nv2.py", "expert_cache.py"], "ask": "Explain how these two Python modules cooperate during decode. Then propose three simplifications."}, "id": "n134-065"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "Estimate how many piano tuners work in Chicago. Show a Fermi estimate with stated assumptions."}], "id": "n134-066"}
+{"cat": "writing", "thinking": false, "messages": [{"role": "user", "content": "Write a persuasive essay arguing for a four-day work week, with counterarguments addressed."}], "id": "n134-067"}
+{"cat": "multilingual-fr", "thinking": false, "messages": [{"role": "user", "content": "Rédige une lettre de motivation pour un poste de développeur web junior."}], "id": "n134-068"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "Given a 3x3 magic square using 1..9, prove the center must be 5."}], "id": "n134-069"}
+{"cat": "structured", "thinking": true, "messages": [{"role": "user", "content": "Produce a CSV with 15 rows of plausible weather data for a week in two cities, with columns date, city, high_c, low_c, precip_mm."}], "id": "n134-070"}
+{"cat": "writing", "thinking": false, "messages": [{"role": "user", "content": "Write a children's bedtime story about a dragon who is afraid of the dark."}], "id": "n134-071"}
+{"cat": "knowledge", "thinking": false, "messages": [{"role": "user", "content": "How do SSDs store data, and why do they wear out? Explain NAND, FTL and write amplification."}], "id": "n134-072"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "Prove that the square root of 2 is irrational."}], "id": "n134-073"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Write a regex that matches valid IPv4 addresses (0-255 per octet) and explain each part. Then write it as a non-regex Python validator."}], "id": "n134-074"}
+{"cat": "longctx", "thinking": true, "long": {"files": ["k_hcfuse.py", "k_overlap.py", "triton_pin.py"], "ask": "Summarize each of these files in one paragraph and describe how they would be tested."}, "id": "n134-075"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Implement the A* search algorithm on a 2D grid with obstacles in Python and print the path."}], "id": "n134-076"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Write a Python asyncio web crawler that respects a concurrency limit of 8 and a per-host delay, using aiohttp."}], "id": "n134-077"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "Find the eigenvalues and eigenvectors of the matrix [[2, 1], [1, 2]] and explain their geometric meaning."}], "id": "n134-078"}
+{"cat": "structured", "thinking": true, "messages": [{"role": "user", "content": "Return a JSON object describing three fictional employees with fields name, role, skills (array), and manager (nullable). Only JSON."}], "id": "n134-079"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Refactor this JavaScript into modern idiomatic code:\n\n```js\nvar self = this; function load(cb){ $.get('/api', function(d){ if(d && d.items){ for(var i=0;i<d.items.length;i++){ self.add(d.items[i]); } cb(null); } else { cb('no data'); } }); }\n```"}], "id": "n134-080"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "Solve the recurrence T(n) = 2T(n/2) + n log n and explain which case of the master theorem applies, if any."}], "id": "n134-081"}
+{"cat": "multilingual-zh", "thinking": true, "messages": [{"role": "user", "content": "帮我写一个Python函数，计算两个日期之间的工作日数量，并加上中文注释。"}], "id": "n134-082"}
+{"cat": "chat", "thinking": false, "messages": [{"role": "user", "content": "Help me write a birthday message for my grandmother who is turning 90."}], "id": "n134-083"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Write a function in C++20 that splits a string_view on a delimiter and returns a vector of string_views. Discuss lifetime pitfalls."}], "id": "n134-084"}
+{"cat": "code", "thinking": false, "messages": [{"role": "user", "content": "Explain how Python's GIL affects multithreaded CPU-bound code and show a multiprocessing alternative with timings."}], "id": "n134-085"}
+{"cat": "knowledge", "thinking": true, "messages": [{"role": "user", "content": "What is the difference between weather and climate, and how do climate models work?"}], "id": "n134-086"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Implement an LRU cache in Rust with O(1) get and put, generic over key and value. Explain the ownership choices."}], "id": "n134-087"}
+{"cat": "writing", "thinking": true, "messages": [{"role": "user", "content": "Write a cover letter for a junior data analyst position, for someone switching from teaching."}], "id": "n134-088"}
+{"cat": "code", "thinking": false, "messages": [{"role": "user", "content": "Write a Kotlin data class for a user profile and a function that validates email and age, returning a sealed result type."}], "id": "n134-089"}
+{"cat": "knowledge", "thinking": false, "messages": [{"role": "user", "content": "Why do we have seasons on Earth? Address the common misconception about distance from the Sun."}], "id": "n134-090"}
+{"cat": "longctx", "thinking": false, "long": {"files": ["serve.py"], "ask": "Document this server's HTTP API as a reference table, then point out any input-validation gaps."}, "id": "n134-091"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Write a Python decorator that retries a function with exponential backoff and jitter, configurable exceptions and max attempts."}], "id": "n134-092"}
+{"cat": "multilingual-ar", "thinking": false, "messages": [{"role": "user", "content": "اشرح باللغة العربية أهمية الطاقة المتجددة ومستقبلها."}], "id": "n134-093"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "Find all integer solutions to x^2 - y^2 = 45."}], "id": "n134-094"}
+{"cat": "chat", "thinking": true, "messages": [{"role": "user", "content": "Recommend some science fiction novels for someone who loved The Martian."}], "id": "n134-095"}
+{"cat": "chat", "thinking": false, "messages": [{"role": "user", "content": "My sourdough keeps coming out flat. What could be going wrong?"}], "id": "n134-096"}
+{"cat": "writing", "thinking": true, "messages": [{"role": "user", "content": "Write a short story (about 600 words) about a lighthouse keeper who finds a message in a bottle from the future."}], "id": "n134-097"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Write a PyTorch training loop for a small MLP on MNIST with mixed precision and gradient clipping."}], "id": "n134-098"}
+{"cat": "chat", "thinking": false, "messages": [{"role": "user", "content": "How do I negotiate a higher salary in a job offer?"}], "id": "n134-099"}
+{"cat": "knowledge", "thinking": true, "messages": [{"role": "user", "content": "Explain the difference between TCP and QUIC and why HTTP/3 uses QUIC."}], "id": "n134-100"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Write a React component for a searchable, paginated table that fetches from /api/items?query=&page=. Use hooks."}], "id": "n134-101"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Implement a thread-safe bounded blocking queue in Java without using java.util.concurrent classes."}], "id": "n134-102"}
+{"cat": "writing", "thinking": false, "messages": [{"role": "user", "content": "Write the opening chapter of a mystery novel set in a 1920s Istanbul hotel."}], "id": "n134-103"}
+{"cat": "structured", "thinking": true, "messages": [{"role": "user", "content": "Generate a JSON Schema for an order object with id, customer, items (sku, qty, price), and status enum."}], "id": "n134-104"}
+{"cat": "writing", "thinking": false, "messages": [{"role": "user", "content": "Write a dialogue between Socrates and a modern software engineer about whether AI can know things."}], "id": "n134-105"}
+{"cat": "chat", "thinking": false, "messages": [{"role": "user", "content": "What's a good way to start learning the piano as an adult with about 20 minutes a day?"}], "id": "n134-106"}
+{"cat": "longctx", "thinking": true, "long": {"files": ["nv2_host.cpp"], "ask": "Review this C++ file. Summarize its architecture, then list the five riskiest concurrency issues you can find with line references."}, "id": "n134-107"}
+{"cat": "multilingual-fr", "thinking": true, "messages": [{"role": "user", "content": "Explique en français les causes de la Révolution française et ses conséquences principales."}], "id": "n134-108"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Write a CUDA kernel that computes a row-wise softmax over a [rows, cols] float matrix, one warp per row. Explain the numerics."}], "id": "n134-109"}
+{"cat": "longctx", "thinking": true, "long": {"files": ["nv2_dev.cu"], "ask": "Explain what each CUDA kernel in this file does and where the synchronization points between device and host are."}, "id": "n134-110"}
+{"cat": "structured", "thinking": false, "messages": [{"role": "user", "content": "Write a Mermaid sequence diagram for an OAuth 2.0 authorization code flow with PKCE."}], "id": "n134-111"}
+{"cat": "chat", "thinking": true, "messages": [{"role": "user", "content": "What's the best way to prepare for a technical job interview in two weeks?"}], "id": "n134-112"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "Explain the Monty Hall problem and prove the switching strategy wins 2/3 of the time."}], "id": "n134-113"}
+{"cat": "chat", "thinking": true, "messages": [{"role": "user", "content": "What should I consider when choosing between renting and buying a home?"}], "id": "n134-114"}
+{"cat": "writing", "thinking": false, "messages": [{"role": "user", "content": "Write a speech for a high school graduation about failure and curiosity."}], "id": "n134-115"}
+{"cat": "chat", "thinking": true, "messages": [{"role": "user", "content": "I'm adopting a cat for the first time. What should I prepare?"}], "id": "n134-116"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "Prove that every tree with n vertices has exactly n-1 edges."}], "id": "n134-117"}
+{"cat": "knowledge", "thinking": true, "messages": [{"role": "user", "content": "Explain how public-key cryptography works, with RSA as the example, including a toy calculation."}], "id": "n134-118"}
+{"cat": "multilingual-ko", "thinking": true, "messages": [{"role": "user", "content": "한국어로 인공지능의 윤리적 문제에 대해 설명해 주세요."}], "id": "n134-119"}
+{"cat": "knowledge", "thinking": false, "messages": [{"role": "user", "content": "Explain how a CPU cache hierarchy works and why data layout matters for performance."}], "id": "n134-120"}
+{"cat": "longctx", "thinking": false, "long": {"files": ["ft_core.h"], "ask": "Explain the numerical kernels in this header and how the AVX2 code paths are organized."}, "id": "n134-121"}
+{"cat": "multilingual-ru", "thinking": false, "messages": [{"role": "user", "content": "Объясни по-русски, как работает блокчейн и где он реально полезен."}], "id": "n134-122"}
+{"cat": "multilingual-zh", "thinking": true, "messages": [{"role": "user", "content": "请用中文解释一下什么是机器学习中的过拟合，以及如何防止它。"}], "id": "n134-123"}
+{"cat": "writing", "thinking": true, "messages": [{"role": "user", "content": "Write a blog post explaining compound interest to teenagers."}], "id": "n134-124"}
+{"cat": "knowledge", "thinking": true, "messages": [{"role": "user", "content": "Explain the history and significance of the Silk Road."}], "id": "n134-125"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Implement a trie in Python with insert, search, starts_with and delete, plus unit tests with pytest."}], "id": "n134-126"}
+{"cat": "multilingual-pt", "thinking": true, "messages": [{"role": "user", "content": "Explique em português como funciona o sistema imunológico humano."}], "id": "n134-127"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "A rectangle has perimeter 40. What dimensions maximize its area? Prove it with and without calculus."}], "id": "n134-128"}
+{"cat": "writing", "thinking": false, "messages": [{"role": "user", "content": "Write a limerick about a programmer who forgot a semicolon, then a sonnet on the same theme."}], "id": "n134-129"}
+{"cat": "knowledge", "thinking": false, "messages": [{"role": "user", "content": "How does the immune system distinguish self from non-self?"}], "id": "n134-130"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "Knights always tell the truth and knaves always lie. A says: 'B is a knave.' B says: 'A and I are of the same kind.' What are A and B?"}], "id": "n134-131"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Write a Python script that reads a large CSV in chunks with pandas and computes per-group medians without loading it all."}], "id": "n134-132"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "A drawer has 10 black and 10 white socks. In the dark, how many must you take to be sure of a matching pair? Of a black pair?"}], "id": "n134-133"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "Let f(x) = x^3 - 6x^2 + 9x + 1. Find the local extrema and inflection points and sketch the behavior."}], "id": "n134-134"}
+{"cat": "structured", "thinking": false, "messages": [{"role": "user", "content": "Convert this to a Markdown table: apples 3 red, bananas 12 yellow, grapes 40 purple, limes 7 green. Add a total row."}], "id": "n134-135"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "Two players alternately take 1 to 3 stones from a pile of 21. The player who takes the last stone loses. Who wins with perfect play?"}], "id": "n134-136"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Implement a simple tokenizer and recursive-descent parser for arithmetic expressions with + - * / and parentheses, in Python."}], "id": "n134-137"}
+{"cat": "code", "thinking": false, "messages": [{"role": "user", "content": "Implement Dijkstra's algorithm in Go using container/heap, and show it on a small graph."}], "id": "n134-138"}
+{"cat": "multilingual-zh", "thinking": false, "messages": [{"role": "user", "content": "写一首关于春天的七言绝句，并解释其中的意象。"}], "id": "n134-139"}
+{"cat": "multiturn", "thinking": true, "messages": [{"role": "user", "content": "I'm building a CLI todo app in Python. Suggest a file format for storing tasks."}, {"role": "assistant", "content": "A simple JSON file works well: a list of objects with id, title, done, created_at and optional due date."}, {"role": "user", "content": "Good. Now write the full app with add, list, done and delete commands using argparse."}], "id": "n134-140"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "In how many ways can 8 rooks be placed on a chessboard so that none attack each other? And 8 queens? Explain the difference."}], "id": "n134-141"}
+{"cat": "multilingual-ja", "thinking": true, "messages": [{"role": "user", "content": "日本語で、量子コンピュータの基本的な仕組みをわかりやすく説明してください。"}], "id": "n134-142"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "What is the probability that in a group of 23 people at least two share a birthday? Derive it."}], "id": "n134-143"}
+{"cat": "knowledge", "thinking": false, "messages": [{"role": "user", "content": "What were the main causes and consequences of the fall of the Western Roman Empire?"}], "id": "n134-144"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Explain what a memory leak looks like in a long-running Node.js server and how to find it with heap snapshots."}], "id": "n134-145"}
+{"cat": "multilingual-de", "thinking": false, "messages": [{"role": "user", "content": "Schreibe eine kurze Geschichte über einen Roboter, der Gärtner werden möchte."}], "id": "n134-146"}
+{"cat": "code", "thinking": true, "messages": [{"role": "user", "content": "Write a bash script that finds the 10 largest files under a directory, skipping .git folders, and prints human-readable sizes."}], "id": "n134-147"}
+{"cat": "chat", "thinking": true, "messages": [{"role": "user", "content": "Can you help me plan a 4-day trip to Lisbon on a moderate budget?"}], "id": "n134-148"}
+{"cat": "multiturn", "thinking": true, "messages": [{"role": "system", "content": "You are a concise senior SRE. Answer with concrete commands."}, {"role": "user", "content": "A Linux server's disk is 100% full and the app is down. Walk me through triage."}], "id": "n134-149"}
+{"cat": "reasoning", "thinking": true, "messages": [{"role": "user", "content": "A bat and a ball cost $1.10 in total. The bat costs $1.00 more than the ball. How much does the ball cost? Explain carefully."}], "id": "n134-150"}
+{"cat": "structured", "thinking": true, "messages": [{"role": "user", "content": "Extract all dates, people and organizations from this text as JSON: 'On March 3, 2021, Alice Chen joined Acme Corp after leaving Globex on February 1. Bob Ruiz from Initech met her on April 15.'"}], "id": "n134-151"}
+{"cat": "multilingual-de", "thinking": true, "messages": [{"role": "user", "content": "Erkläre auf Deutsch den Unterschied zwischen Wetter und Klima und warum das wichtig ist."}], "id": "n134-152"}
