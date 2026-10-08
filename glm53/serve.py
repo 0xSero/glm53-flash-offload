@@ -234,7 +234,9 @@ async def run_job(ids, sp, stop_strings=None):
             text += chunk
             fin = None
             if r.get("eos"):
-                n = int(r.get("new_tokens", n))
+                # exllamav3's new_tokens restarts at every max_rq_tokens requeue (GLM53_MAX_RQ_TOKENS), so for answers longer
+                # than one page round it under-reports; the streamed count n covers the whole answer
+                n = max(n, int(r.get("new_tokens", 0)))
                 reason = r.get("eos_reason")
                 fin = {"type": "length" if reason == "max_new_tokens" else "stop", "reason": str(reason)}
                 G["stats"]["completion_tokens"] += n
