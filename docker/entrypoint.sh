@@ -116,7 +116,22 @@ if [ "$GLM53_CPU_TIER" = "1" ] || [ "${GLM53_NV_CPU:-0}" = "1" ]; then
 fi
 AVAIL_GB=$(awk '/MemAvailable/{printf "%d", $2/1048576}' /proc/meminfo)
 NEED_GB=$([ "$GLM53_CPU_TIER" = "1" ] && [ "${GLM53_CT_SWZ:-1}" != "0" ] && echo 222 || echo 114)   # second (CPU-layout) expert copy or not
-[ "$NV_MODE" != "0" ] && NEED_GB=24   # NVMe modes: non-expert weights + process ~9 GiB; the RAM tier takes what the cap leaves
+# NVMe modes: the RAM tier is sized from the cap (glm53/nv2.py: cap - process - margin - prefill ring - recurrent-state
+# cache), so the floor is the process itself plus a small tier. Measured (HOM-272 N129, 2026-10-08): a 16 GiB cap with the
+# small-host budget below gives a 969-expert (8.5 GiB) tier, 13.2 GiB at ready and a 14.4 GiB peak while serving.
+SMALL_ARGS=()
+if [ "$NV_MODE" != "0" ]; then
+    NEED_GB=${GLM53_NV_MIN_GB:-15}
+    if [ -r /sys/fs/cgroup/memory.max ] && [ "$(cat /sys/fs/cgroup/memory.max)" != "max" ] \
+       && [ "$(( $(cat /sys/fs/cgroup/memory.max) / 1073741824 ))" -lt "${GLM53_NV_SMALL_BELOW_GB:-24}" ]; then
+        # small-host budget (caps under 24 GiB); every value can be overridden with -e, -rcs with a later -rcs argument.
+        # Most decode picks come from NVMe here, so the reader pool is deeper (48 readers x 1 MiB pieces vs 16 x 2304 KiB).
+        export GLM53_NV_MARGIN_GB=${GLM53_NV_MARGIN_GB:-1.5} GLM53_NV_PF_RING=${GLM53_NV_PF_RING:-128}
+        export GLM53_NV_THREADS=${GLM53_NV_THREADS:-48} GLM53_NV_PIECE_KB=${GLM53_NV_PIECE_KB:-1024}
+        SMALL_ARGS=(-rcs "${GLM53_RCS_GB:-1}")   # exllamav3 host recurrent-state cache: 1 GiB instead of 4
+        log "small-host NVMe budget (cap < ${GLM53_NV_SMALL_BELOW_GB:-24} GiB): -rcs ${GLM53_RCS_GB:-1}, margin ${GLM53_NV_MARGIN_GB} GiB, prefill ring ${GLM53_NV_PF_RING} slots, ${GLM53_NV_THREADS} readers x ${GLM53_NV_PIECE_KB} KiB"
+    fi
+fi
 if [ -r /sys/fs/cgroup/memory.max ] && [ "$(cat /sys/fs/cgroup/memory.max)" != "max" ]; then
     LIM_GB=$(( $(cat /sys/fs/cgroup/memory.max) / 1073741824 ))
     [ "$LIM_GB" -ge "$NEED_GB" ] || die "container memory limit ${LIM_GB} GiB < ~${NEED_GB} GiB needed (raise --memory or use -e GLM53_MODE=exact)"
@@ -157,7 +172,7 @@ EOF
 fi
 [ -f "$MODEL/quantization_config.json" ] || log "WARNING: $MODEL has no quantization_config.json; expected the EXL3 3.05bpw checkpoint"
 
-ARGS=(-m "$MODEL" -cs 131072 --max-batch-size 8 -chunk_size 8192 "${MODE_ARGS[@]}" --host 0.0.0.0 --port "$PORT"
+ARGS=(-m "$MODEL" -cs 131072 --max-batch-size 8 -chunk_size 8192 "${MODE_ARGS[@]}" "${SMALL_ARGS[@]}" --host 0.0.0.0 --port "$PORT"
       --served-name "${SERVED_NAME:-glm-5.3-flash}")
 # shellcheck disable=SC2206
 [ -n "${GLM53_ARGS:-}" ] && ARGS+=($GLM53_ARGS)
