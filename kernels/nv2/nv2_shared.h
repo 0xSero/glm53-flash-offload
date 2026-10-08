@@ -19,7 +19,9 @@ enum { DC_SEQ = 0, DC_LANDH = 1, DC_WBN = 2, DC_ADMN = 3, DC_NU = 4, DC_TPUB = 5
 constexpr int DBGW = 8;    // debug ring words per request
 constexpr int DBG = 4096;   // latency debug ring (device: tpub, t_step, t_seen; host: t_notice, t_reply)
 // lanes (reply)
-enum { LN_RAM = 0, LN_NVG = 1, LN_CPU = 2, LN_VRAM = 3, LN_NVC = 4, LN_RZC = 5, LN_NZC = 6 };
+enum { LN_RAM = 0, LN_NVG = 1, LN_CPU = 2, LN_VRAM = 3, LN_NVC = 4, LN_RZC = 5, LN_NZC = 6, LN_B70 = 7 };
+// LN_B70 (N137): computed by the B70 expert server from its own VRAM; masked on the GPU like a CPU pick, the CPU
+// worker posts it to the B70 ring and adds the returned rows into hout before HC_CDONE
 // LN_RAM / LN_NVG: GPU, admitted to VRAM (copy) | LN_RZC / LN_NZC: GPU zero-copy from the (landed) RAM slot, not admitted
 // request kinds
 enum { RK_DECODE = 0, RK_SMALL = 1 };

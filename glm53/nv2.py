@@ -22,6 +22,10 @@ Env: GLM53_NV_RAM_GB (auto), GLM53_NV_MARGIN_GB (3), GLM53_NV_THREADS (16 reader
      GLM53_NV_CPU_MODE (-1 auto), GLM53_NV_CLAMP (1: swiglu clamp on the CPU share, B004 fix), GLM53_NV_POL (cost model
      "g0,thit,tzc,ca,cb,ctok,push,nvlat,nvdeep,nvone"), GLM53_NV_MAXCPU (32), GLM53_NV_CTL_CPU (25),
      GLM53_NV_READER_CPUS (26-39), GLM53_NV_TIMEOUT_S (20), GLM53_NV_COPY_GRID (48)
+N137 B70 expert tier (needs the CPU tier, GLM53_NV_CPU=1): GLM53_B70 (0), GLM53_B70_RING (/ring/ring, written by
+     b70/b70srv.py on the B70), GLM53_B70_N (3000 experts), GLM53_B70_ORDER (score: warm-score order after the VRAM warm
+     set | rr: the RAM tier's round-robin rank), GLM53_B70_TIMEOUT_S (2). Decode picks of B70-resident experts are masked
+     on the 3090 and computed on the B70; their RAM copies are dropped (exclusive) and RAM refills with colder experts.
 """
 import collections, concurrent.futures as cf, ctypes, json, mmap, os, signal, threading, time
 import numpy as np
@@ -96,6 +100,11 @@ class Nv2:
         self.act_limit = float(getattr(m0, "act_limit", 0.0) or 0.0)
         g = lambda k, d: os.environ.get(k, d)
         self.cpu_on = g("GLM53_NV_CPU", "0") == "1"
+        self.b70 = g("GLM53_B70", "0") == "1"
+        assert not self.b70 or self.cpu_on, "GLM53_B70=1 needs the CPU tier (GLM53_NV_CPU=1): the CPU worker runs the B70 lane"
+        self.b70_ring = g("GLM53_B70_RING", "/ring/ring")
+        self.b70_timeout = float(g("GLM53_B70_TIMEOUT_S", "2"))
+        self.b70_keys = []
         self.timeout_ns = int(float(g("GLM53_NV_TIMEOUT_S", "5")) * 1e9)
         self.grid = int(g("GLM53_NV_COPY_GRID", "48"))
         self.wb_on = g("GLM53_NV_EXCL", "1") == "1"
@@ -223,7 +232,8 @@ class Nv2:
                  "lane_nvg", "lane_nvc", "reads", "read_bytes", "wb_landed", "wb_dup", "adm_freed", "adm_pinned",
                  "evictions", "cpu_jobs", "cpu_experts", "cpu_tokens", "stage_ram", "stage_nv", "stage_reads", "read_err",
                  "alloc_fail", "land_pushed", "prefetch", "plan_ns", "ctl_busy_ns", "cpu_busy_ns", "cpu_wait_land_ns",
-                 "read_ms_x1000", "stage_wait_ns", "stage_job_ns", "wb_bulk", "dec_tok", "notice_ns", "notice_max_ns", "serve_max_ns", "reply_ns", "wb_issued", "wb_drop", "vring_hits", "resident", "inflight", "free", "landing"]
+                 "read_ms_x1000", "stage_wait_ns", "stage_job_ns", "wb_bulk", "dec_tok", "notice_ns", "notice_max_ns", "serve_max_ns", "reply_ns", "wb_issued", "wb_drop", "vring_hits", "lane_b70", "b70_jobs", "b70_rows", "b70_wait_ns", "b70_rtt_ns", "b70_err", "b70_rtt_max_ns",
+                 "resident", "inflight", "free", "landing"]
         return dict(zip(names, ext().counters()))
 
     # ---- warm start: RAM by score (incl. the VRAM warm set), VRAM warm, exclusive: drop VRAM copies, refill RAM
@@ -249,10 +259,13 @@ class Nv2:
         torch.cuda.synchronize(self.dev)
         so = p.slotof.flatten().cpu().numpy()
         vk = np.nonzero(so >= 0)[0]
+        self.b70_keys = self._b70_pick(so) if self.b70 else []
+        b70set = set(self.b70_keys)
         nd = 0
         if self.wb_on:
-            nd = ext().drop_keys(torch.from_numpy(vk.astype(np.int64)))
-            rest = [k for k in self._rank if so[k] < 0]
+            drop = np.concatenate([vk.astype(np.int64), np.asarray(self.b70_keys, np.int64)])
+            nd = ext().drop_keys(torch.from_numpy(drop))
+            rest = [k for k in self._rank if so[k] < 0 and k not in b70set]
             st = ext().state()
             ks = st[1].numpy()
             rest = [k for k in rest if ks[k] == 0][: nd]
@@ -260,11 +273,34 @@ class Nv2:
                 ext().warm_read(torch.tensor(rest, dtype=torch.int64))
         ext().nv_rows_all(self.L, self.E, p.slotof, self.a["home"], p.tabs)
         torch.cuda.synchronize(self.dev)
+        if self.b70:
+            ms = ext().b70_attach(self.b70_ring, torch.tensor(self.b70_keys, dtype=torch.int64), 900.0)
+            ext().b70_set(1, self.b70_timeout)
+            NT._log(f"nv2 B70 tier: {len(self.b70_keys)} experts loaded on the B70 server in {ms / 1e3:.1f} s ({self.b70_ring})")
         ext().reset_counters()
         self.dstats.zero_()
         c = self.counters()
         NT._log(f"nv2 post-warm: {len(vk)} VRAM-resident, {nd} RAM copies of them dropped (exclusive), RAM resident "
                 f"{c['resident']}, free {c['free']}")
+
+    def _b70_pick(self, so):
+        """B70 key set: the next experts after the 3090's VRAM warm set, by warm score (or the RAM tier's rank order)."""
+        n = int(os.environ.get("GLM53_B70_N", "3000"))
+        if os.environ.get("GLM53_B70_ORDER", "score") == "rr":
+            order = self._rank
+        else:
+            sc = np.full(self.K, -1.0)
+            for li, m in enumerate(self.pool.mods):
+                s = self.scores.get(m.key)
+                if s is not None:
+                    sc[li * self.E:(li + 1) * self.E] = np.asarray(s[:self.E], np.float64)
+            order = [int(k) for k in np.argsort(-sc, kind="stable") if sc[k] >= 0]
+        return [k for k in order if so[k] < 0][:n]
+
+    def set_b70(self, on):
+        """Runtime switch (decode-KL harness): on=False -> B70-resident picks take the normal RAM/NVMe lanes (exact)."""
+        if self.b70:
+            ext().b70_set(int(bool(on)), self.b70_timeout)
 
     # ---- per MoE layer call (decode / small forwards) -----------------------------------------------------------
     def layer(self, li, sel, w, z, bsz):
@@ -529,7 +565,11 @@ class Nv2:
                                    "zc_admits": r(c["lane_zc"] / steps), "nvme_gpu": r(c["lane_nvg"] / steps),
                                    "nvme_cpu": r(c["lane_nvc"] / steps),
                                    "reply_wait_ms": r(d[9] / 1e6 / steps), "nvme_wait_ms": r(d[11] / 1e6 / steps),
-                                   "cpu_busy_ms": r(c["cpu_busy_ns"] / 1e6 / steps)},
+                                   "cpu_busy_ms": r(c["cpu_busy_ns"] / 1e6 / steps),
+                                   "b70_experts": r(c["lane_b70"] / steps), "b70_wait_ms": r(c["b70_wait_ns"] / 1e6 / steps)},
+               "b70": {"on": self.b70, "keys": len(self.b70_keys), "jobs": c["b70_jobs"], "rows": c["b70_rows"],
+                       "rtt_us_mean": r(c["b70_rtt_ns"] / 1e3 / max(1, c["b70_jobs"])), "rtt_us_max": r(c["b70_rtt_max_ns"] / 1e3),
+                       "wait_us_mean": r(c["b70_wait_ns"] / 1e3 / max(1, c["b70_jobs"])), "err": c["b70_err"]},
                "memcg": NT.cgroup_mem()}
         ps = out["decode_per_step"]
         out["decode_per_token"] = {k: (r(v * steps / toks) if isinstance(v, float) else v) for k, v in ps.items()

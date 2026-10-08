@@ -21,11 +21,20 @@
 #include <signal.h>
 #include "ft_core.h"
 #include "nv2_shared.h"
+#include <sys/mman.h>
+#include <fcntl.h>
 
 using namespace nv2s;
 void dev_bind(pybind11::module& m);
 
 namespace nv2h {
+
+// N137 B70 ring layout (b70/ring.py): HDR int64[512] | KEYS int32[16384] | REQ | X fp16[MAXP][H] | OUT fp16[MAXP][H]
+constexpr int64_t B70_MAGIC = 0x4E31333752494E47LL;
+constexpr int64_t B70_OFF_KEYS = 4096, B70_OFF_REQ = 69632, B70_OFF_X = 73728, B70_OFF_OUT = 73728 + 64LL * 4096 * 2;
+constexpr int64_t B70_SIZE = ((B70_OFF_OUT + 64LL * 4096 * 2 + 4095) / 4096) * 4096;
+enum { B70_W_MAGIC = 0, B70_W_STATE = 4, B70_W_LOAD_SEQ = 6, B70_W_LOAD_ACK = 7, B70_W_NKEYS = 8, B70_W_REQ_SEQ = 9,
+       B70_W_DONE_SEQ = 10, B70_W_ERR = 11, B70_W_NSLOTS = 18, B70_W_HEARTBEAT = 19 };
 
 static inline long long realtime_ns() { struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); return (long long) ts.tv_sec * 1000000000LL + ts.tv_nsec; }
 static inline double now_ms() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
@@ -115,6 +124,7 @@ struct Counters
         lane_zc{0}, lane_cpu{0}, lane_nvg{0}, lane_nvc{0}, reads{0}, read_bytes{0}, wb_landed{0}, wb_dup{0}, adm_freed{0},
         adm_pinned{0}, evictions{0}, cpu_jobs{0}, cpu_experts{0}, cpu_tokens{0}, stage_ram{0}, stage_nv{0},
         stage_reads{0}, read_err{0}, alloc_fail{0}, land_pushed{0}, prefetch{0}, dec_tok{0}, wb_issued{0}, wb_drop{0}, vring_hits{0}, notice_ns{0}, notice_max_ns{0}, serve_max_ns{0};
+    std::atomic<long long> lane_b70{0}, b70_jobs{0}, b70_rows{0}, b70_wait_ns{0}, b70_rtt_ns{0}, b70_err{0}, b70_rtt_max_ns{0};
     std::atomic<long long> reply_ns{0}, plan_ns{0}, ctl_busy_ns{0}, cpu_busy_ns{0}, cpu_wait_land_ns{0}, read_ms_x1000{0},
         stage_wait_ns{0}, stage_job_ns{0}, wb_bulk{0};
 };
@@ -171,6 +181,8 @@ struct Engine
     int cpu_mode = -1;
     std::atomic<int64_t> cpu_job_seq{0};
     struct CJob { int64_t seq; int li, ntok, np; int e[MAXP], t[MAXP], lane[MAXP]; float w[MAXP]; } cj;
+    // N137 B70 expert tier: static resident key set on the B70 server, shared host ring (b70/ring.py layout)
+    std::vector<int8_t> b70k; bool b70_on = false; uint8_t* b70r = nullptr; int64_t b70_seq = 0; int64_t b70_timeout_ns = 2000000000LL;
     std::vector<float> xf, tmpout;
     // stage engine
     std::vector<int64_t> pf_ring_addr;
@@ -394,11 +406,13 @@ struct Engine
         const bool dec = r.kind == RK_DECODE;
         const bool cpu = dec && pol.cpu_on && cpu_ready && r.np <= MAXP && r.ntok <= MAXB;
         V.clear(); Rm.clear(); N.clear();
-        int nnv = 0;
+        int nnv = 0, nb70 = 0;
+        const bool b70 = cpu && b70_on;
         for (int u = 0; u < r.nu; ++u)
         {
             const int key = r.key[u];
             if (r.cls[u] == LN_VRAM) { p.lane[u] = LN_VRAM; V.push_back({ u, key, r.cnt[u], 0, 0 }); continue; }
+            if (b70 && b70k[key]) { p.lane[u] = LN_B70; nb70++; C.lane_b70++; continue; }
             if (kst[key] == KS_RES)
             {
                 lru_touch(slot_of[key]);
@@ -437,12 +451,12 @@ struct Engine
             else if (dec && pol.nv_noadmit) { g = std::max(g, a) + pol.tzc; p.lane[k.u] = LN_NZC; C.lane_nvg++; }   // cold: zero-copy, keep VRAM
             else { g = ge; p.lane[k.u] = LN_NVG; C.lane_nvg++; }
         }
-        p.ncpu = ncpu; p.nnv = nnv;
+        p.ncpu = ncpu + nb70; p.nnv = nnv;
         // layer-ahead prefetch hints (next layer's predicted picks): read the non-resident ones now (behind demand reads)
         for (int i = 0; i < r.npf && i < MAXP; ++i)
         {
             const int key = r.pf_key[i];
-            if (key < 0 || key >= K || kst[key] != KS_NONE) continue;
+            if (key < 0 || key >= K || kst[key] != KS_NONE || (b70_on && b70k[key])) continue;
             if (start_read(key, true, nullptr)) C.prefetch++;
         }
         C.plan_ns += (long long) ((now_ms() - t0) * 1e6);
@@ -473,7 +487,7 @@ struct Engine
                 for (int q = 0; q < r.nu; ++q) if (r.key[q] == r.li * E + e) { u = q; break; }
                 if (u < 0) continue;
                 const int ln = p.lane[u];
-                if (ln != LN_CPU && ln != LN_NVC) continue;
+                if (ln != LN_CPU && ln != LN_NVC && ln != LN_B70) continue;
                 const int topk = r.np / std::max(1, r.ntok);
                 cj.e[cj.np] = e; cj.t[cj.np] = i / std::max(1, topk); cj.w[cj.np] = r.pw[i]; cj.lane[cj.np] = ln; cj.np++;
             }
@@ -542,6 +556,20 @@ struct Engine
         Layer& Ly = layers[li];
         xf.resize(size_t(std::max(ntok, 1)) * H);
         for (size_t i = 0; i < size_t(ntok) * H; ++i) xf[i] = h2f(hx[i]);
+        int nb = 0; int btok[MAXP];
+        if (b70r)
+        {
+            int32_t* rq = (int32_t*) (b70r + B70_OFF_REQ);
+            uint16_t* bx = (uint16_t*) (b70r + B70_OFF_X);
+            for (int k = 0; k < np; ++k)
+                if (cj.lane[k] == LN_B70)
+                {
+                    rq[4 + nb] = cj.e[k]; ((float*) rq)[4 + MAXP + nb] = cj.w[k]; rq[4 + 2 * MAXP + nb] = cj.t[k];
+                    std::memcpy(bx + size_t(nb) * H, hx + size_t(cj.t[k]) * H, size_t(H) * 2);
+                    btok[nb++] = cj.t[k];
+                }
+            if (nb) b70_post(nb, ntok, li);
+        }
         std::vector<int> pinned;
         std::vector<std::vector<std::pair<int, float>>> r1(ntok), r2(ntok);
         bool any2 = false;
@@ -562,13 +590,15 @@ struct Engine
         {
             std::lock_guard<std::mutex> lk(mu);
             for (int k = 0; k < np; ++k)
-                if (cj.lane[k] != LN_NVC)
+                if (cj.lane[k] == LN_CPU)
                 {
                     if (kst[li * E + cj.e[k]] != KS_RES) { hc[HC_ERR] = 34; continue; }
                     if (bind(k)) r1[cj.t[k]].push_back({ cj.e[k], cj.w[k] });
                 }
         }
-        moe_forward(pool, Ly, xf.data(), ntok, r1, hout, mode);
+        bool any1 = false; for (auto& v : r1) any1 |= !v.empty();
+        if (any1 || !nb) moe_forward(pool, Ly, xf.data(), ntok, r1, hout, mode);
+        else std::memset(hout, 0, size_t(ntok) * H * 4);
         if (any2)
         {
             {
@@ -595,7 +625,53 @@ struct Engine
             std::lock_guard<std::mutex> lk(mu);
             for (int s : pinned) pinc[s]--;
         }
-        C.cpu_jobs++; C.cpu_experts += np; C.cpu_tokens += ntok;
+        if (nb) b70_collect(nb, btok);
+        C.cpu_jobs++; C.cpu_experts += np - nb; C.cpu_tokens += ntok;
+    }
+
+    // ---------------- N137 B70 ring client ----------------
+    volatile int64_t* b70h() { return (volatile int64_t*) b70r; }
+    void b70_post(int nb, int ntok, int li)
+    {
+        int32_t* rq = (int32_t*) (b70r + B70_OFF_REQ);
+        rq[0] = nb; rq[1] = ntok; rq[2] = li;
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        b70_t0 = now_ms();
+        __atomic_store_n(&b70h()[B70_W_REQ_SEQ], ++b70_seq, __ATOMIC_RELEASE);
+    }
+    double b70_t0 = 0;
+    bool b70_wait()
+    {
+        const double tw = now_ms();
+        long n = 0;
+        while (__atomic_load_n(&b70h()[B70_W_DONE_SEQ], __ATOMIC_ACQUIRE) != b70_seq)
+        {
+            _mm_pause();
+            if ((++n & 4095) == 0 && (now_ms() - tw) * 1e6 > b70_timeout_ns) { hc[HC_ERR] = 40; C.b70_err++; return false; }
+        }
+        const double t1 = now_ms();
+        C.b70_wait_ns += (long long) ((t1 - tw) * 1e6);
+        const long long rtt = (long long) ((t1 - b70_t0) * 1e6);
+        C.b70_rtt_ns += rtt; C.b70_rtt_max_ns = std::max<long long>(C.b70_rtt_max_ns.load(), rtt);
+        if (b70h()[B70_W_ERR]) { hc[HC_ERR] = 41; C.b70_err++; return false; }
+        return true;
+    }
+    void b70_collect(int nb, const int* btok)
+    {
+        if (!b70_wait()) return;
+        const uint16_t* bo = (const uint16_t*) (b70r + B70_OFF_OUT);
+        for (int i = 0; i < nb; ++i)
+        {
+            float* o = hout + size_t(btok[i]) * H;
+            const uint16_t* s = bo + size_t(i) * H;
+            for (int j = 0; j < H; j += 8)
+            {
+                __m256 a = _mm256_loadu_ps(o + j);
+                __m256 b = _mm256_cvtph_ps(_mm_loadu_si128((const __m128i*) (s + j)));
+                _mm256_storeu_ps(o + j, _mm256_add_ps(a, b));
+            }
+        }
+        C.b70_jobs++; C.b70_rows += nb;
     }
 
     // ---------------- stage engine (prefill) ----------------
@@ -922,7 +998,8 @@ std::vector<int64_t> counters()
         c.lane_cpu, c.lane_nvg, c.lane_nvc, c.reads, c.read_bytes, c.wb_landed, c.wb_dup, c.adm_freed, c.adm_pinned,
         c.evictions, c.cpu_jobs, c.cpu_experts, c.cpu_tokens, c.stage_ram, c.stage_nv, c.stage_reads, c.read_err,
         c.alloc_fail, c.land_pushed, c.prefetch, c.plan_ns, c.ctl_busy_ns, c.cpu_busy_ns, c.cpu_wait_land_ns,
-        c.read_ms_x1000, c.stage_wait_ns, c.stage_job_ns, c.wb_bulk, c.dec_tok, c.notice_ns, c.notice_max_ns, c.serve_max_ns, c.reply_ns, c.wb_issued, c.wb_drop, c.vring_hits };
+        c.read_ms_x1000, c.stage_wait_ns, c.stage_job_ns, c.wb_bulk, c.dec_tok, c.notice_ns, c.notice_max_ns, c.serve_max_ns, c.reply_ns, c.wb_issued, c.wb_drop, c.vring_hits,
+        c.lane_b70, c.b70_jobs, c.b70_rows, c.b70_wait_ns, c.b70_rtt_ns, c.b70_err, c.b70_rtt_max_ns };
     std::lock_guard<std::mutex> lk(e.mu);
     int res = 0, inf = 0; for (int k = 0; k < e.K; ++k) { res += e.kst[k] == KS_RES; inf += e.kst[k] == KS_INFLIGHT; }
     v.push_back(res); v.push_back(inf); v.push_back((int64_t) e.freel.size()); v.push_back(e.land_tail - e.hc[HC_WBN]);
@@ -1021,6 +1098,78 @@ at::Tensor cpu_forward(int64_t li, at::Tensor x, at::Tensor sel, at::Tensor w, i
     return out;
 }
 
+// ---- N137 B70 tier ----
+// test-only engine (no CUDA, no readers): geometry only, so b70_attach / b70_forward can be checked without a GPU
+void b70_test_engine(int64_t L, int64_t E, int64_t H)
+{
+    TORCH_CHECK(G == nullptr, "nv2 engine already initialised");
+    G = new Engine();
+    G->L = int(L); G->E = int(E); G->K = int(L * E); G->H = int(H);
+    static int64_t hc_dummy[HC_N] = {0};
+    G->hc = (volatile int64_t*) hc_dummy;
+}
+// attach the ring, LOAD the key set on the server (blocks until it answers), mark the keys B70-resident
+int64_t b70_attach(std::string path, at::Tensor keys, double load_timeout_s)
+{
+    Engine& e = *G;
+    const int fd = open(path.c_str(), O_RDWR);
+    TORCH_CHECK(fd >= 0, "b70: cannot open ring ", path);
+    void* p = mmap(nullptr, B70_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+    TORCH_CHECK(p != MAP_FAILED, "b70: mmap failed");
+    e.b70r = (uint8_t*) p;
+    volatile int64_t* h = e.b70h();
+    TORCH_CHECK(h[B70_W_MAGIC] == B70_MAGIC, "b70: bad ring magic");
+    const int n = int(keys.numel());
+    TORCH_CHECK(n <= 16384, "b70: too many keys");
+    int32_t* kk = (int32_t*) (e.b70r + B70_OFF_KEYS);
+    auto ka = keys.accessor<int64_t, 1>();
+    for (int i = 0; i < n; ++i) kk[i] = int32_t(ka[i]);
+    h[B70_W_NKEYS] = n;
+    const int64_t ls = h[B70_W_LOAD_SEQ] + 1;
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    h[B70_W_LOAD_SEQ] = ls;
+    const double t0 = now_ms();
+    while (h[B70_W_LOAD_ACK] != ls)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        TORCH_CHECK((now_ms() - t0) / 1e3 < load_timeout_s, "b70: LOAD timed out");
+    }
+    TORCH_CHECK(h[B70_W_STATE] == 2, "b70: server LOAD failed, err ", (long long) h[B70_W_ERR]);
+    e.b70k.assign(e.K, 0);
+    for (int i = 0; i < n; ++i) e.b70k[ka[i]] = 1;
+    e.b70_seq = h[B70_W_DONE_SEQ];
+    return (int64_t) ((now_ms() - t0));
+}
+void b70_set(int64_t on, double timeout_s) { Engine& e = *G; TORCH_CHECK(e.b70r || !on, "b70: not attached"); e.b70_on = on != 0; e.b70_timeout_ns = int64_t(timeout_s * 1e9); }
+// synchronous forward through the ring (decode idle or B70 lane off): x fp32 [m, H], sel int32 [m, k], w fp32 [m, k]
+at::Tensor b70_forward(int64_t li, at::Tensor x, at::Tensor sel, at::Tensor w)
+{
+    Engine& e = *G;
+    TORCH_CHECK(e.b70r, "b70: not attached");
+    const int m = int(x.size(0)), k = int(sel.size(1));
+    TORCH_CHECK(m * k <= MAXP, "b70_forward: too many picks");
+    auto sa = sel.accessor<int32_t, 2>(); auto wa = w.accessor<float, 2>(); auto xa = x.accessor<float, 2>();
+    int32_t* rq = (int32_t*) (e.b70r + B70_OFF_REQ);
+    uint16_t* bx = (uint16_t*) (e.b70r + B70_OFF_X);
+    int nb = 0; int btok[MAXP];
+    for (int t = 0; t < m; ++t)
+        for (int j = 0; j < k; ++j)
+        {
+            TORCH_CHECK(e.b70k[li * e.E + sa[t][j]], "b70_forward: expert not B70-resident");
+            rq[4 + nb] = sa[t][j]; ((float*) rq)[4 + MAXP + nb] = wa[t][j]; rq[4 + 2 * MAXP + nb] = t;
+            for (int c = 0; c < e.H; ++c) bx[size_t(nb) * e.H + c] = f2h(xa[t][c]);
+            btok[nb++] = t;
+        }
+    auto out = torch::zeros({ m, e.H }, torch::kFloat);
+    float* save = e.hout;
+    e.hout = out.data_ptr<float>();
+    e.b70_post(nb, m, int(li));
+    e.b70_collect(nb, btok);
+    e.hout = save;
+    return out;
+}
+
 // ---- stage engine ----
 void stage_begin(at::Tensor so, int64_t li0) { G->stage_begin(so.data_ptr<int32_t>(), int(li0)); }
 double stage_layer(int64_t li, int64_t base, int64_t stream, int64_t ev_wait, int64_t ev_done) { return G->stage_layer(int(li), base, stream, ev_wait, ev_done); }
@@ -1064,6 +1213,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
     m.def("cpu_start", &cpu_start);
     m.def("cpu_set", &cpu_set);
     m.def("cpu_forward", &cpu_forward, py::call_guard<py::gil_scoped_release>());
+    m.def("b70_attach", &b70_attach, py::call_guard<py::gil_scoped_release>());
+    m.def("b70_set", &b70_set);
+    m.def("b70_test_engine", &b70_test_engine);
+    m.def("b70_forward", &b70_forward, py::call_guard<py::gil_scoped_release>());
     m.def("stage_begin", &stage_begin, py::call_guard<py::gil_scoped_release>());
     m.def("stage_layer", &stage_layer, py::call_guard<py::gil_scoped_release>());
     m.def("stage_end", &stage_end, py::call_guard<py::gil_scoped_release>());
