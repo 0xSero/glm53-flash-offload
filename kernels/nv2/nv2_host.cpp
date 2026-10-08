@@ -407,7 +407,7 @@ struct Engine
         const bool cpu = dec && pol.cpu_on && cpu_ready && r.np <= MAXP && r.ntok <= MAXB;
         V.clear(); Rm.clear(); N.clear();
         int nnv = 0, nb70 = 0;
-        const bool b70 = cpu && b70_on;
+        const bool b70 = dec && b70_on && cpu_ready && r.np <= MAXP && r.ntok <= MAXB;   // independent of the CPU lane switch
         for (int u = 0; u < r.nu; ++u)
         {
             const int key = r.key[u];

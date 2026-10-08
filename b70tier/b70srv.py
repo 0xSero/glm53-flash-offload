@@ -16,6 +16,7 @@ sys.path.insert(0, "/opt/trellis-serve/xpu")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("EXL3_MOE_LIB", "/n128/_moe_n128.so")
 from exl3xpu import moe_offload
+from exl3xpu.moe_offload import s64
 from exl3xpu.glmtier import make_perm
 import ring as RG
 
@@ -47,15 +48,27 @@ class Server:
         self.slot_of = np.full(self.L * E, -1, np.int64)
         self.ptrs = torch.zeros(self.L * E, dtype=torch.int64, device=self.dev)
         # device request buffer: ids int32[MAXP] | w f32[MAXP] | x fp16[MAXP, H] (same order as the ring's REQ/X)
-        self.d_ids = torch.zeros(RG.MAXP, dtype=torch.int32, device=self.dev)
-        self.d_w = torch.zeros(RG.MAXP, dtype=torch.float32, device=self.dev)
-        self.d_x = torch.zeros(RG.MAXP, H, dtype=torch.float16, device=self.dev)
+        # one device copy of the ring's REQ page + X rows (single H2D per request)
+        self.d_req = torch.zeros(4096 + RG.MAXP * H * 2, dtype=torch.uint8, device=self.dev)
+        self.d_ids = self.d_req[16:16 + RG.MAXP * 4].view(torch.int32)
+        self.d_w = self.d_req[16 + RG.MAXP * 4:16 + RG.MAXP * 8].view(torch.float32)
+        self.d_x = self.d_req[4096:].view(torch.float16).view(RG.MAXP, H)
+        self.req_addr = self.r.base + RG.OFF_REQ
+        # N137 COPY=usm: bounce through pinned USM host buffers (CPU memcpy ring <-> USM, USM <-> device); sysptr
+        # copies from the shared tmpfs ring cost 45-78 us per submit (measured), USM submits ~7 us
+        if self.copy_mode == "usm":
+            self.h_req = torch.empty(4096 + RG.MAXP * H * 2, dtype=torch.uint8, pin_memory=True)
+            self.h_out = torch.empty(RG.MAXP * H * 2, dtype=torch.uint8, pin_memory=True)
+            self.h_req_np, self.h_out_np = self.h_req.numpy(), self.h_out.numpy()
+            self.ring_req_np = self.r.buf[RG.OFF_REQ:RG.OFF_REQ + 4096 + RG.MAXP * H * 2]
+            self.ring_out_np = self.r.buf[RG.OFF_OUT:RG.OFF_OUT + RG.MAXP * H * 2]
         self.ids_addr = self.r.base + RG.OFF_REQ + 16
         self.w_addr = self.ids_addr + RG.MAXP * 4
         self.x_addr = self.r.base + RG.OFF_X
         self.out_addr = self.r.base + RG.OFF_OUT
         self.t = dict(calls=0, seen_to_done_ns=[], kern_ns=[], np=[])
         self.logp = os.environ.get("N137_LOG", "")
+        self.prof = [] if os.environ.get("N137_PROF") else None
         p = torch.xpu.get_device_properties(self.dev)
         log(f"device {p.name} total {p.total_memory / 2**30:.2f} GiB, blob {self.blob}, store layers {self.L}, "
             f"copy {self.copy_mode}")
@@ -87,7 +100,7 @@ class Server:
 
         pool = cf.ThreadPoolExecutor(int(os.environ.get("N137_READERS", "8")))
         self.slot_of[:] = -1
-        base = self.slots.data_ptr()
+        base = s64(self.slots.data_ptr())
         for i in range(0, n, R):
             chunk = keys[i:i + R]
             half = (i // R) % 2
@@ -96,7 +109,7 @@ class Server:
                 f.result()
             torch.xpu.synchronize()        # previous chunk's copies from the other half are done (ordering only)
             for j in range(len(chunk)):
-                self.X.memcpy_async(sbase + j * self.rec, hbase + (half * R + j) * self.rec, self.rec)
+                self.X.memcpy_async(s64(sbase + j * self.rec), s64(hbase + (half * R + j) * self.rec), self.rec)
             m = len(chunk)
             d = torch.arange(i, i + m, dtype=torch.int64, device=self.dev)
             self.slots.view(torch.int32).index_copy_(0, d, stage[:m].view(torch.int32).index_select(1, self.perm))
@@ -132,22 +145,37 @@ class Server:
             r.hdr[RG.W_ERR] = 10
             return
         ids = r.ids[:n]
+        P = self.prof
+        if P is not None: ta = time.perf_counter_ns()
         if (ids < 0).any() or (ids >= E).any() or (self.slot_of[li * E + ids.astype(np.int64)] < 0).any():
             r.hdr[RG.W_ERR] = 11           # non-resident id: refuse (the kernel would read a wrong expert)
             return
-        if self.copy_mode == "sysptr":
-            self.X.memcpy_async(self.d_ids.data_ptr(), self.ids_addr, n * 4)
-            self.X.memcpy_async(self.d_w.data_ptr(), self.w_addr, n * 4)
-            self.X.memcpy_async(self.d_x.data_ptr(), self.x_addr, n * H * 2)
+        if self.copy_mode == "usm":
+            nb = 4096 + n * H * 2
+            self.h_req_np[:nb] = self.ring_req_np[:nb]
+            self.X.memcpy_async(s64(self.d_req.data_ptr()), s64(self.h_req.data_ptr()), nb)
+            if P is not None: tb = time.perf_counter_ns()
+        elif self.copy_mode == "sysptr":
+            self.X.memcpy_async(s64(self.d_req.data_ptr()), s64(self.req_addr), 4096 + n * H * 2)
+            if P is not None: tb = time.perf_counter_ns()
         else:
             self.d_ids[:n].copy_(torch.from_numpy(ids.copy()))
             self.d_w[:n].copy_(torch.from_numpy(r.w[:n].copy()))
             self.d_x[:n].copy_(torch.from_numpy(r.x[:n]))
         out = self.X.moe_forward(self.d_x[:n], self.d_ids[:n].view(n, 1), self.d_w[:n].view(n, 1),
                                  self.ptrs[li * E:(li + 1) * E], I, K, E)
-        if self.copy_mode == "sysptr":
-            self.X.memcpy_async(self.out_addr, out.data_ptr(), n * H * 2)
+        if P is not None: tc = time.perf_counter_ns()
+        if self.copy_mode == "usm":
+            self.X.memcpy_async(s64(self.h_out.data_ptr()), s64(out.data_ptr()), n * H * 2)
+            if P is not None: td = time.perf_counter_ns()
             torch.xpu.synchronize()
+            self.ring_out_np[:n * H * 2] = self.h_out_np[:n * H * 2]
+            if P is not None: P.append((ta - t0, tb - ta, tc - tb, td - tc, time.perf_counter_ns() - td))
+        elif self.copy_mode == "sysptr":
+            self.X.memcpy_async(s64(self.out_addr), s64(out.data_ptr()), n * H * 2)
+            if P is not None: td = time.perf_counter_ns()
+            torch.xpu.synchronize()
+            if P is not None: P.append((ta - t0, tb - ta, tc - tb, td - tc, time.perf_counter_ns() - td))
         else:
             o = out.cpu()
             r.out[:n] = o.numpy()
@@ -166,6 +194,10 @@ class Server:
             x = a[nn == v]
             out["by_np"][int(v)] = {"n": int(len(x)), "us_p50": round(float(np.percentile(x, 50)), 1),
                                     "us_p90": round(float(np.percentile(x, 90)), 1)}
+        if self.prof:
+            q = np.asarray(self.prof[100:]) / 1e3
+            out["prof_us_p50"] = dict(zip(["parse", "checks+h2d_submit", "moe_forward_host", "d2h_submit", "sync_wait"],
+                                          [round(float(v), 1) for v in np.percentile(q, 50, axis=0)]))
         json.dump(out, open(self.logp, "w"), indent=1)
 
     def loop(self):

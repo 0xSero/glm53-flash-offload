@@ -49,9 +49,9 @@ PROMPTS = [
     "Summarise the causes of the 2008 financial crisis in five bullet points.",
     "Explain what a hash table is to a 12-year-old.",
 ]
-# name -> (cpu lane on, nvme->cpu, clamp)
+# name -> (cpu lane on, nvme->cpu, clamp[, B70 lane on (N137)])
 ALL = {"control_off": (False, None, None), "cpu_default": (True, None, True), "cpu_noclamp": (True, None, False),
-       "cpu_nvcpu": (True, 1, True)}
+       "cpu_nvcpu": (True, 1, True), "b70_only": (False, None, None, True), "cpu_b70": (True, None, True, True)}
 VARIANTS = os.environ.get("GLM53_KL_VARIANTS", "control_off,cpu_default,cpu_noclamp").split(",")
 
 
@@ -77,15 +77,17 @@ def main():
     for q in PROMPTS:
         text = f"[gMASK]<sop><|user|>{q}<|assistant|><think></think>"
         ids = SX.tok.encode(text, encode_special_tokens=True)
-        NV.set_cpu(False)
+        NV.set_cpu(False); NV.set_b70(False)
         T, LA = run(gen, ids, ntok)
         for name in VARIANTS:
-            on, nvc, clamp = ALL[name]
+            on, nvc, clamp = ALL[name][:3]
+            b70 = len(ALL[name]) > 3 and ALL[name][3]
             NV.set_cpu(on, nvcpu=nvc, clamp=clamp)
+            NV.set_b70(b70)
             c0 = NV.counters()
             tb, LB = run(gen, ids, len(T), ForcedFilter(SX.tok, T))
             c1 = NV.counters()
-            NV.set_cpu(False)
+            NV.set_cpu(False); NV.set_b70(False)
             fd = next((i for i, (a, b) in enumerate(zip(tb, T)) if a != b), None)
             n = min(LA.shape[0], LB.shape[0])
             la, lb = torch.log_softmax(LA[:n], -1), torch.log_softmax(LB[:n], -1)
@@ -94,6 +96,7 @@ def main():
             ag = int((la.argmax(-1) == lb.argmax(-1)).sum())
             a = agg[name]; a["kls"] += kl.tolist(); a["agree"] += ag; a["n"] += n; a["fd"].append(fd)
             a["cpu_experts"] += c1["cpu_experts"] - c0["cpu_experts"]; a["dec_reqs"] += c1["dec_reqs"] - c0["dec_reqs"]
+            a["b70_experts"] = a.get("b70_experts", 0) + c1["lane_b70"] - c0["lane_b70"]
             print(json.dumps({"prompt": q[:40], "variant": name, "n": n, "kl_mean": float(kl.mean()), "top1": ag / max(n, 1),
                               "forced_mismatch": fd}), flush=True)
     tot = {}
@@ -101,7 +104,8 @@ def main():
         k = sorted(a["kls"])
         tot[name] = {"positions": a["n"], "kl_mean": sum(k) / max(1, len(k)), "kl_p99": k[int(0.99 * (len(k) - 1))] if k else None,
                      "kl_max": k[-1] if k else None, "top1_agree": a["agree"] / max(1, a["n"]), "forced_mismatch": a["fd"],
-                     "cpu_experts_per_layer_call": a["cpu_experts"] / max(1, a["dec_reqs"])}
+                     "cpu_experts_per_layer_call": a["cpu_experts"] / max(1, a["dec_reqs"]),
+                     "b70_experts_per_layer_call": a.get("b70_experts", 0) / max(1, a["dec_reqs"])}
         print("VARIANT", name, json.dumps(tot[name]), flush=True)
     tot["_meta"] = {"tokens_per_prompt": ntok, "prompts": len(PROMPTS), "seconds": round(time.time() - t0, 1),
                     "cpu_selftest": getattr(NV, "selftest", None), "pol": NV.pol}
