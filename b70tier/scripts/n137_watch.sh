@@ -5,7 +5,7 @@ R=$1; since="$2"; Q=$(dirname "$0")
 while docker ps --format '{{.Names}}' | grep -q '^n137-b70'; do
   if ! bash $Q/n137_guard.sh "$since" watch >> $R/guard.txt 2>&1; then
     echo "$(date '+%F %T') TRIPPED -> stopping n137-b70 containers" >> $R/guard.txt
-    touch $R/TRIPPED
+    touch $R/TRIPPED $Q/../TRIPPED
     pkill -f "test_ring.py|test_client_cpp.py" 2>/dev/null
     for n in $(docker ps --format '{{.Names}}' | grep '^n137-b70'); do timeout 60 docker stop -t 5 $n || timeout 30 docker kill $n; done
     exit 2

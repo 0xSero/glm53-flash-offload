@@ -24,5 +24,5 @@ for c in meta["cases"]:
     rows.append({"tag": tag, "b70cpp_vs_cuda_rel_l2": round(rel(yb, y.astype(np.float64)), 6), "b70cpp_vs_fp64_rel_l2": round(rel(yb, y64), 6),
                  "cuda_vs_fp64_rel_l2": c["cuda_vs_fp64_rel_l2"], "finite": bool(np.isfinite(yb).all()), "us": round(dt, 1)})
     print(json.dumps(rows[-1]), flush=True)
-json.dump(rows, open("/out/test_client_cpp.json", "w"), indent=1)
+json.dump(rows, open("/o/test_client_cpp.json", "w"), indent=1)
 print("CPP CLIENT DONE worst b70_vs_cuda", max(r["b70cpp_vs_cuda_rel_l2"] for r in rows))

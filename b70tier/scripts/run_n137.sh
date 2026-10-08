@@ -15,11 +15,11 @@ $K > $R/kcheck_before.txt 2>&1 || { log "kcheck TRIPPED before start"; exit 9; }
 busy=$(nvidia-smi --query-compute-apps=gpu_bus_id,pid,used_memory --format=csv,noheader,nounits 2>/dev/null | awk -F', ' 'tolower($1) ~ /81:00/ && $3 > 2000' | wc -l)
 [ "$busy" = "0" ] || { log "GPU0 has $busy compute processes over 2 GiB; refusing to start"; exit 8; }
 docker ps --format '{{.Names}}' | grep -q '^omarchy-local-ai' && { log "user container present; refusing"; exit 8; }
-ENVS=(-e GLM53_MODE=nvme -e GLM53_EC_MAX_SLOTS=1376 -e TORCH_CUDA_ARCH_LIST=8.6 -e PORT=$PORT -e GLM53_NV_VERIFY_START=1
+ENVS=(-e GLM53_MODE=nvme -e GLM53_EC_MAX_SLOTS=1376 -e TRITON_CACHE_DIR=/opt/glm53/build/triton_cache -e TORCH_CUDA_ARCH_LIST=8.6 -e PORT=$PORT -e GLM53_NV_VERIFY_START=1
       -e GLM53_KL_VARIANTS=${KL_VARIANTS:-control_off,cpu_default,cpu_b70,b70_only})
 for kv in "$@"; do ENVS+=(-e "$kv"); done
 MOUNTS=(-v /home/sero/models/turboderp-GLM-5.3-Flash-exl3-3.05bpw:/models:ro -v $R:/out -v /mnt/nvx/glm53:/nvx:ro
-        -v $N/repo:/opt/glm53:ro -v $N/build/nv:/opt/glm53/build/nv -v $N/build/nv2:/opt/glm53/build/nv2 -v /dev/shm/n137:/ring)
+        -v $N/repo:/opt/glm53:ro -v $N/build:/opt/glm53/build -v /dev/shm/n137:/ring)
 ARGS=(); [ "${STEPS:-}" = kl ] && ARGS=(decode-kl --kl-out /out/decode_kl.json)
 echo "docker run --name $CN --gpus device=0 --memory ${MEM:-55g} --memory-swap ${MEM:-55g} --shm-size 1g --ulimit memlock=-1 --cpuset-cpus 2-39 --network host ${ENVS[*]} ${MOUNTS[*]} $IMG ${ARGS[*]}" > $R/cmd.txt
 docker run --rm --name $CN --gpus '"device=0"' --memory ${MEM:-55g} --memory-swap ${MEM:-55g} --shm-size 1g --ulimit memlock=-1 \
