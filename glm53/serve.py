@@ -9,6 +9,7 @@ Offload stack (each piece is a monkeypatch around stock exllamav3, enabled by en
   k_hcfuse.py      GLM53_K_HCFUSE=1     fused hyper-connection decode sites (bit-exact)
   k_ftsplit.py     GLM53_K_FTSPLIT=1    faster CPU-tier split kernel (bit-identical)
   k_overlap.py     GLM53_K_OVL=1        shared expert on a side stream in decode (not bitwise: ~2e-3 rel per layer)
+  k_lookahead.py   GLM53_LA=1           C1 decode lookahead: next step enqueued on the device token (bit-exact)
 
 Endpoints
   GET  /health, /v1/models, /server_info, /stats
@@ -66,6 +67,9 @@ def load():
 
     t_load = time.time()
     model, config, cache, tok, draft_model, _draft_config, draft_cache = model_init.init(args)
+    if os.environ.get("GLM53_LA") == "1":   # N136: embedding table host-mapped (device-side lookup for lookahead)
+        import k_lookahead
+        k_lookahead.prep_model(model)
     if os.environ.get("GLM53_ZC_VRAM"):
         print(f" -- zero-copy tier summary: {exl3_tiers.summary()}", flush=True)
     if os.environ.get("GLM53_CPU_TIER") == "1":   # routers wrapped BEFORE the cache attaches
@@ -88,6 +92,12 @@ def load():
     if os.environ.get("GLM53_K_HCFUSE") == "1":   # fused hyper-connection sites, bit-exact (k_hcfuse.py)
         import k_hcfuse
         k_hcfuse.install(model)
+    if os.environ.get("GLM53_LA") == "1":   # N136: decode lookahead (next forward enqueued before the token is read)
+        k_lookahead.install(model)
+        k_lookahead.set_enabled(os.environ.get("GLM53_LA_ON", "1") == "1")
+    if os.environ.get("GLM53_NVTX") == "1" or os.environ.get("GLM53_PROF"):   # N136 profiling hooks (n136_prof.py)
+        import n136_prof
+        n136_prof.install(model)
     t_load = time.time() - t_load
     print(f" -- loaded in {t_load:.1f} s", flush=True)
 
@@ -501,6 +511,9 @@ async def stats():
     if os.environ.get("GLM53_K_HCFUSE") == "1":
         import k_hcfuse
         st["k_hcfuse"] = dict(k_hcfuse.STATS)
+    if os.environ.get("GLM53_LA") == "1":
+        import k_lookahead
+        st["k_lookahead"] = k_lookahead.summary()
     if os.environ.get("GLM53_NV") == "1":
         import nv_tier
         st["nv_tier"] = nv_tier.summary()
@@ -523,6 +536,13 @@ async def nv_verify(n: int = 64):
         return JSONResponse(nv2.NV.verify(n))
     import nv_tier
     return JSONResponse(nv_tier.NV.verify(n) if nv_tier.NV is not None else {"error": "GLM53_NV off"})
+
+
+@app.get("/la")
+async def la(on: int = 1):
+    """N136: runtime lookahead switch for same-server A/B (takes effect at the next decode step)."""
+    import k_lookahead
+    return JSONResponse({"enabled": k_lookahead.set_enabled(bool(on)), "stats": k_lookahead.summary()})
 
 
 @app.get("/health")

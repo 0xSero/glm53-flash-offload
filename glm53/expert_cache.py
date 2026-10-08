@@ -790,6 +790,9 @@ def attach_modules(mods):
             orig = m.routing_fn
 
             def routed(bsz, cfg, z, params, _orig=orig, _m=m):
+                if _m._ec[0].nv2 is not None and _m._ec[0].nv2.pfside and not params.get("autosplit_measure") \
+                        and not params.get("tp_warmup"):
+                    _m._ec[0].nv2.predict_early(_m._ec[1], z, bsz)
                 sel, w = _orig(bsz, cfg, z, params)
                 pool, li = _m._ec
                 _m._nv2_cpu = False
