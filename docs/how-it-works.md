@@ -55,7 +55,7 @@ exllamav3's own MoE kernels then run unchanged on those tables. The cache starts
 
 **Why it helps.** A VRAM hit costs nothing extra: no transfer and no host work.
 
-**Measured.** About 120 of the ~318 unique picks per token hit VRAM (39-40 %). On the all-RAM path, the cache plus
+**Measured.** About 120 of the ~318 unique picks per token hit VRAM (38-39 %). On the all-RAM path, the cache plus
 direct reads of host memory took decode from 7.5-8.4 tok/s (stock exllamav3) to 12.6 tok/s (`exact`).
 
 ### 2. RAM tier, exclusive of VRAM
