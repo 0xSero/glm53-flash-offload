@@ -1,9 +1,11 @@
 # glm53-flash-offload: full reference
 
 The complete previous README: every campaign table, quality check, image smoke, configuration variable and
-reproduction pin. The short start-here page is the [README](../README.md). Since this page was written, the NVMe-mode
-image moved to `ghcr.io/sybil-solutions/glm53-flash-offload@sha256:99b8926e...` (repo `7f1ee89`, local-ai-registry lab
-acceptance PR #187); the commands below keep the digests they were measured with.
+reproduction pin. The short start-here page is the [README](../README.md); current tables are in
+[results.md](results.md), mechanisms and every NVMe-mode setting in [how-it-works.md](how-it-works.md). Since this page
+was written, the NVMe-mode image moved to `ghcr.io/sybil-solutions/glm53-flash-offload@sha256:4732a063...` (v4.2-nvme,
+repo `3bdb502`; before it `99b8926e`, repo `7f1ee89`, local-ai-registry lab acceptance PR #187); the commands below
+keep the digests they were measured with.
 
 Serve **GLM-5.3-Flash** (EXL3 3.05 bpw, 125.3 GB, 288 routed experts x 42 MoE layers) from **one 24 GB RTX 3090**
 plus host DDR4, with an OpenAI-compatible API. All routed experts live in pinned host RAM; the GPU keeps an elastic
