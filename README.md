@@ -57,9 +57,11 @@ curl -s localhost:30000/v1/chat/completions -H 'content-type: application/json' 
   thread layout from the container's CPU set and logs it (speed with a derived layout is not measured).
 - **Bit-exact output:** `-e GLM53_MODE=nvme-exact` (8.3 tok/s). **All experts in RAM (~238 GB free):** see
   [Pick your mode](#pick-your-mode).
-- **16 GB of RAM:** not runnable with this image yet. Its entrypoint stops NVMe modes below a 24 GiB cap
-  (`container memory limit 16 GiB < ~24 GiB needed`); the 16 GB numbers below come from a campaign build. A 16 GB lab
-  acceptance is in progress; this section gets the command and digest when it passes.
+- **16 GB of RAM:** from the image after this repo's small-host change (next tag), the same command with
+  `--memory 16g --memory-swap 16g` runs: below a 24 GiB cap the entrypoint applies a small-host budget (`-rcs 1`,
+  margin 1.5 GiB, 128-slot prefill ring, 48 NVMe readers x 1 MiB; each overridable) and the RAM tier sizes itself to
+  ~969 experts. NVMe modes now refuse only caps under 15 GiB (`GLM53_NV_MIN_GB`). Older images (v4.1-nvme and before)
+  stop at 24 GiB. The digest and lab result land here when the 16 GB acceptance passes.
 
 **Client settings.** Base URL `http://127.0.0.1:30000/v1`, model `glm-5.3-flash`, no API key is checked (send any
 string). The server speaks OpenAI Chat Completions (`/v1/chat/completions`, streaming, `tools` -> `tool_calls`,
@@ -198,7 +200,7 @@ image smoke and quality check: [docs/reference.md](docs/reference.md).
 | `[glm53] ERROR: /nvx (...) does not support O_DIRECT reads/writes` | the store is on a filesystem that refuses `O_DIRECT`. Put it on xfs or ext4 on a local NVMe drive and mount that directory at `/nvx`. `pack-store`, `verify-store` and the server all run this probe first |
 | `NVMe store not found: /nvx/glm53_flash_exl3_3.05bpw_experts.bin` | run `pack-store` (step 2) and mount the same directory at `/nvx` |
 | `GLM53_MODE=nvme sizes its RAM tier from the container memory cap` | add `--memory 55g --memory-swap 55g` |
-| `container memory limit N GiB < ~24 GiB needed` | NVMe modes in this image need a cap of at least 24 GiB; the 16 GB variant is not released yet |
+| `container memory limit N GiB < ~24 GiB needed` | an image from before the small-host change (v4.1-nvme or older): use a newer tag, or a cap of at least 24 GiB. Newer images refuse NVMe modes only under 15 GiB (`< ~15 GiB needed`) |
 | `WARNING: memory.swap.max is ...`, or the container is OOM-killed (exit 137) | `--memory-swap` must equal `--memory`. With the default, pages swap out (zram, swap files) and escape the cap. Keep `--shm-size 1g`: shared memory counts against the cap |
 | CUDA out of memory in `graph.cu` mid-run while a desktop uses the same GPU | keep `-e GLM53_EC_MAX_SLOTS=1376`; free VRAM, or raise `GLM53_EC_RESERVE_GB` |
 | decode far below the tables | the store is on a slow drive. Decode reads ~20 GB/s at the 16 GB cap; an 8 GB/s read cap alone cost ~8 % C1, ~33 % C4 and ~26 % prefill. Check reads with `iostat -x 1` during a request; use a RAID0 of NVMe drives. Also check the startup line `nv2 CPU layout`: a derived layout (fewer than 40 CPUs) is not measured |
