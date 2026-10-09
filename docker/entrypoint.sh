@@ -65,6 +65,12 @@ case "$MODE" in
                export GLM53_K_OVL=${GLM53_K_OVL:-0} GLM53_NV_VRING=${GLM53_NV_VRING:-24} GLM53_NV_PREFETCH=${GLM53_NV_PREFETCH:-1}
                [ "${GLM53_MAIN_CPUS+x}" = x ] || GLM53_MAIN_DEFAULT=24
                export GLM53_MAX_RQ_TOKENS=${GLM53_MAX_RQ_TOKENS:-4096}   # page-allocation round, not an output cap: lets C2/C4 run together
+               # HOM-272 levers (same-session A/Bs on the RTX 3090, quality class unchanged; each can be set to 0):
+               #   GLM53_NV_CPU_KERN=1  N135 CPU-lane forward (PR #10): C1 +6.2 % at 55 GB, +8.4 % at 16 GB
+               #   GLM53_LA=1, GLM53_NV_PUBFAST=1, GLM53_NV_PFSIDE=1 (batch 1 only), GLM53_LA_BTTRIM=1  N136 (PR #11):
+               #     decode lookahead (bit-exact), fast nv_pub, side-stream prefetch guess, MLA block-table trim: C1 +3 %
+               export GLM53_NV_CPU_KERN=${GLM53_NV_CPU_KERN:-1} GLM53_LA=${GLM53_LA:-1} GLM53_NV_PUBFAST=${GLM53_NV_PUBFAST:-1}
+               export GLM53_NV_PFSIDE=${GLM53_NV_PFSIDE:-1} GLM53_LA_BTTRIM=${GLM53_LA_BTTRIM:-1}
            fi ;;
     *) die "GLM53_MODE must be fast, exact, nvme or nvme-exact (got $MODE)" ;;
 esac
