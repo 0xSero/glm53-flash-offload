@@ -115,6 +115,21 @@ while the GPU works on its own.
 - The lane applies exllamav3's SwiGLU clamp. Without it the KL was 0.0063.
 - Prefill never uses the CPU lane and is exact. `nvme-exact` turns the lane off.
 
+**Alternative kernel (opt-in, `GLM53_NV_CPU_KERN=1`).** `kernels/nv2/ft_n135.h` runs the same picks with:
+- one thread-pool run per layer call, instead of four barrier phases;
+- a 16-bit pair decode (p16);
+- work units that read whole contiguous rows of the RAM slot when every expert in the call has one token. ft_core's
+  128-output blocks read 768 B every 12-24 KB, and that access pattern alone is capped near 89 GB/s.
+
+It also runs the NVMe->CPU picks in the same forward, binding each one when it lands (`GLM53_NV_CPU_MERGE`). The RAM
+layout is unchanged.
+
+Numerics:
+- one token per expert: 3e-4 relative to the default kernel, the same error class against fp64;
+- two or more tokens per expert: bit-identical to the default kernel.
+
+Kernel microbench and logs: `bench/cpu_kernel/`, `results/cpu_kernel/`.
+
 ### 5. Host engine: one controller, landed flags, no per-layer host sync
 
 **What it does.** Each decode MoE layer runs this sequence:
@@ -334,6 +349,8 @@ These are the settings for the NVMe modes. Defaults are what the entrypoint sets
 | `GLM53_NV_EXCL` | 1 | exclusive RAM tier (write-back of VRAM victims) |
 | `GLM53_NV_CPU` | 1 (0) | AVX2 CPU lane on RAM-resident decode picks |
 | `GLM53_NV_CPU_THREADS` | 0 = one per CPU in `GLM53_NV_CPU_CPUS` | CPU-lane threads |
+| `GLM53_NV_CPU_KERN` | 0 | 1 = N135 CPU-lane forward (`ft_n135.h`); 0 = ft_core `moe_forward` |
+| `GLM53_NV_CPU_MERGE` / `GLM53_NV_CPU_BANDMAXM` | 1 / 1 | with `KERN=1`: NVMe->CPU picks in the same forward / use full-row units up to this many tokens per expert |
 | `GLM53_NV_CLAMP` | 1 | SwiGLU clamp on the CPU share (matches exllamav3) |
 | `GLM53_NV_CPU_CPUS`, `GLM53_MAIN_CPUS`, `GLM53_NV_CTL_CPU`, `GLM53_NV_READER_CPUS` | 2-23, 24, 25, 26-39 (or derived) | thread pinning |
 | `GLM53_NV_VERIFY_START` | 1 | byte-check sampled VRAM and RAM slots against the store at start |
