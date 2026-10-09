@@ -101,6 +101,104 @@ __global__ void nv_pub_k(const int64_t* __restrict__ sel, const __half* __restri
     }
 }
 
+// N136: nv_pub_k with the two serial thread-0 scans over E (unique-expert positions, prefetch-hint keys) replaced by
+// warp-ballot compactions (same ascending order, same MAXP cap), the ack wait overlapped with the counting, and the
+// x-row copy issued before the request words. Same request contents bit for bit; 320 threads = 10 warps >= E / 32.
+constexpr int PUBF_T = 320;
+__global__ __launch_bounds__(PUBF_T) void nv_pub_fast_k(const int64_t* __restrict__ sel, const __half* __restrict__ w,
+    const __half* __restrict__ z, int n, int bsz, int H, int li, int E, int first, const int* __restrict__ slotof, int kind,
+    int send_x, volatile long long* hc, Req* req, __half* hx, long long* dc, int* uidx, int* uexp, long long timeout_ns,
+    const int64_t* __restrict__ pf, int npf, const int* __restrict__ slotof_next)
+{
+    __shared__ int cnt[MAXU];
+    __shared__ unsigned char pfm[MAXU];
+    __shared__ int wsum[PUBF_T / 32], wsum2[PUBF_T / 32];
+    __shared__ long long s_seq;
+    const int t = threadIdx.x, lane = t & 31, wp = t >> 5;
+    const bool do_pf = pf && npf > 0;
+    for (int e = t; e < E; e += blockDim.x) { cnt[e] = 0; pfm[e] = 0; }
+    if (t == 0)
+    {
+        const long long sq = dc[DC_SEQ] + 1;
+        dc[DC_SEQ] = sq;
+        s_seq = sq;
+    }
+    __syncthreads();
+    for (int s = t; s < n; s += blockDim.x)
+    {
+        const long long e = sel[s] - first;
+        if (e >= 0 && e < E) atomicAdd(&cnt[e], 1);
+    }
+    if (do_pf)
+        for (int i = t; i < npf; i += blockDim.x)
+        {
+            const long long e = pf[i] - first;
+            if (e >= 0 && e < E && slotof_next[e] < 0) pfm[e] = 1;
+        }
+    if (t == 0)
+    {
+        const long long sq = s_seq;
+        const unsigned long long t0 = gtime();
+        while (ldv64(hc + HC_ACK) < sq - RQ + 1)          // ring entry still unread by the host
+            if ((long long) (gtime() - t0) > timeout_ns) { hc[HC_ERR] = 2; break; }
+    }
+    __syncthreads();
+    const long long sq = s_seq;
+    Req* r = req + (sq % RQ);
+    if (send_x)
+    {
+        const int nx = bsz * H / 8;
+        for (int i = t; i < nx; i += blockDim.x) reinterpret_cast<int4*>(hx)[i] = reinterpret_cast<const int4*>(z)[i];
+    }
+    // ballot compaction, one expert per thread (E <= PUBF_T)
+    const int e = t;
+    const bool f = e < E && cnt[e] > 0;
+    const bool g = do_pf && e < E && pfm[e];
+    const unsigned bf = __ballot_sync(0xffffffffu, f), bg = __ballot_sync(0xffffffffu, g);
+    const unsigned lt = (1u << lane) - 1u;
+    if (lane == 0) { wsum[wp] = __popc(bf); wsum2[wp] = __popc(bg); }
+    __syncthreads();
+    int base = 0, base2 = 0, tot = 0, tot2 = 0;
+    #pragma unroll
+    for (int k = 0; k < PUBF_T / 32; ++k)
+    {
+        if (k < wp) { base += wsum[k]; base2 += wsum2[k]; }
+        tot += wsum[k]; tot2 += wsum2[k];
+    }
+    if (e < E)
+    {
+        const int u = f ? base + __popc(bf & lt) : -1;
+        uidx[e] = u;
+        if (f)
+        {
+            uexp[u] = e;
+            r->key[u] = li * E + e; r->cls[u] = slotof[e] >= 0 ? LN_VRAM : 0; r->cnt[u] = cnt[e];
+        }
+        if (g)
+        {
+            const int k = base2 + __popc(bg & lt);
+            if (k < MAXP) r->pf_key[k] = (li + 1) * E + e;
+        }
+    }
+    if (n <= MAXP)
+        for (int s = t; s < n; s += blockDim.x) { r->pe[s] = (int) (sel[s] - first); r->pw[s] = __half2float(w[s]); }
+    if (t == 0)
+    {
+        dc[DC_NU] = tot;
+        r->npf = do_pf ? min(tot2, MAXP) : 0;
+        r->li = li; r->nu = tot; r->np = n; r->ntok = bsz; r->kind = kind;
+        const long long tp = (long long) gtime(); r->tpub = tp; dc[DC_TPUB] = tp;
+    }
+    __threadfence_system();
+    __syncthreads();
+    if (t == 0)
+    {
+        *(volatile long long*) &r->seq = sq;
+        __threadfence_system();
+        hc[HC_PUB] = sq;
+    }
+}
+
 __global__ void nv_step_k(const int64_t* __restrict__ sel, const __half* __restrict__ w, int64_t* sel_out, __half* w_out,
     int n, int first, int li, int E, int S, int admit, int* slotof_all, const volatile long long* home_all,
     const volatile int* ram_res, const int64_t* tabs, int* owner, int* refb, int* pin, int* ctl, int* jobs, int* jobx,
@@ -419,6 +517,16 @@ void nv_pub(at::Tensor sel, at::Tensor w, int64_t z, int64_t n, int64_t bsz, int
     c10::cuda::CUDAGuard g(sel.device());
     TORCH_CHECK(sel.dtype() == at::kLong && sel.is_contiguous() && w.dtype() == at::kHalf && w.is_contiguous());
     TORCH_CHECK(E <= MAXU);
+    static const int pub_fast = getenv("GLM53_NV_PUBFAST") && atoi(getenv("GLM53_NV_PUBFAST")) == 1 && MAXU <= PUBF_T;
+    if (pub_fast)
+    {
+        nv_pub_fast_k<<<1, PUBF_T, 0, cur(sel)>>>(sel.data_ptr<int64_t>(), (const __half*) w.data_ptr(), (const __half*) z,
+            (int) n, (int) bsz, (int) H, (int) li, (int) E, (int) first, slotof_row.data_ptr<int>(), (int) kind,
+            (int) send_x, (volatile long long*) hc, (Req*) req, (__half*) hx, (long long*) dc.data_ptr<int64_t>(),
+            uidx.data_ptr<int>(), uexp.data_ptr<int>(), timeout_ns, (const int64_t*) pf, (int) npf,
+            slotof_next.data_ptr<int>());
+        return;
+    }
     nv_pub_k<<<1, 256, 0, cur(sel)>>>(sel.data_ptr<int64_t>(), (const __half*) w.data_ptr(), (const __half*) z, (int) n,
         (int) bsz, (int) H, (int) li, (int) E, (int) first, slotof_row.data_ptr<int>(), (int) kind, (int) send_x,
         (volatile long long*) hc, (Req*) req, (__half*) hx, (long long*) dc.data_ptr<int64_t>(), uidx.data_ptr<int>(),
