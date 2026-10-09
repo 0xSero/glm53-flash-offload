@@ -25,8 +25,8 @@ back to back in the same session.
 |---|---|---|---|---|---|---|
 | ~218 GiB free | `fast` | 28.15 | 33.98 | 710 / 951 | prefill exact; decode KL 0.0053, top-1 0.977 | `ghcr.io/0xsero/glm53-flash-offload@sha256:bb633b0b...` |
 | ~111 GiB free | `exact` | 12.57 | 12.64 (serial) | 697 / 945 | bit-exact | same as `fast` |
-| 55 GiB cap + NVMe | `nvme` | 17.27 (n129); lab 17.3 | 19.59 (screen) | 662 / 965 | prefill exact; decode KL 0.0047-0.0051, top-1 0.983-0.986 | `ghcr.io/sybil-solutions/glm53-flash-offload@sha256:4732a063...` (v4.2-nvme) |
-| 16 GiB cap + NVMe | `nvme` | 12.91 (screen) | not run | 628 / not run | same CPU lane as `nvme` | v4.2-nvme |
+| 55 GiB cap + NVMe | `nvme` | **19.47** (v4.6; v4.4 same session 17.32) | 19.75 | 664 / 969 | prefill exact; decode KL 0.0077, top-1 0.977 (v4.6; earlier images 0.0047-0.0070) | `ghcr.io/sybil-solutions/glm53-flash-offload@sha256:aa74200f...` (v4.6-nvme) |
+| 16 GiB cap + NVMe | `nvme` | **14.38** (v4.6; v4.4 same session 12.89) | not run | 650 / not run | same CPU lane as `nvme` | v4.6-nvme |
 | 55 GiB cap + NVMe | `nvme-exact` | 8.28 | 8.28 (serial) | 564 / 806 | bit-exact | v4.2-nvme |
 
 "Serial" means the concurrent streams ran one after another. KL is the mean KL divergence of the next-token
@@ -35,6 +35,22 @@ distribution against the exact GPU path on the same tokens, paired, in the same 
 
 Full image digests:
 
+- v4.6-nvme: `ghcr.io/sybil-solutions/glm53-flash-offload@sha256:aa74200f16c86588b101be2315aed2f643d148559179eef52a02599016b56e69`.
+  It was built by local-ai-images run [37910016883](https://github.com/sybil-solutions/local-ai-images/actions/runs/37910016883)
+  from this repo at `0fbc0c5` and is SLSA-attested. `GLM53_MODE=nvme` defaults to the N135 CPU-lane forward and the
+  N136 decode switches (PRs #10-#12).
+
+  v4.6-nvme, 55 GiB cap, same session as a v4.4 control (2026-10-09, natural completions):
+
+  | prefill size | prefill speed | decode speed | concurrency | kv cache | gpu count |
+  |---|---|---|---|---|---|
+  | 8,192 | 664 tok/s | 19.47 tok/s | 1 | 131,072 | 1 |
+  | 8,192 | - | 19.09 tok/s agg (10.02 per stream) | 2 | 131,072 | 1 |
+  | 8,192 | - | 19.75 tok/s agg (5.53 per stream) | 4 | 131,072 | 1 |
+  | 32,768 | 969 tok/s | 18.30 tok/s | 1 | 131,072 | 1 |
+  | 32,768 | - | 18.44 tok/s agg | 2 | 131,072 | 1 |
+
+  v4.4 control in the same session: 8k C1 17.32, C4 19.27. 16 GiB cap: v4.6 C1 14.38 vs v4.4 12.89 (8k prefill 650).
 - v4.2-nvme: `ghcr.io/sybil-solutions/glm53-flash-offload@sha256:4732a063fa9e28d4d5dc7b2c3b57cb7ed84ecfff40caeb4b5bc59d71be1882b3`.
   It was built by local-ai-images run [37786722640](https://github.com/sybil-solutions/local-ai-images/actions/runs/37786722640)
   from this repo at `3bdb502` and is SLSA-attested.
