@@ -6,8 +6,8 @@ NVMe for the experts that do not fit on the GPU.
 | RAM for the server | mode | decode, 1 user | prefill 8k / 32k | output vs stock exllamav3 |
 |---|---|---|---|---|
 | 218 GiB free | `fast` | 28.2 tok/s | 710 / 951 tok/s | near-exact (decode KL 0.005) |
-| **55 GiB cap** + NVMe | **`nvme`** | **17.3 tok/s** | 662 / 965 tok/s | near-exact (decode KL 0.005) |
-| 16 GiB cap + NVMe | `nvme` | 12.9 tok/s | 628 / not run | near-exact (same CPU lane) |
+| **55 GiB cap** + NVMe | **`nvme`** | **19.5 tok/s** | 664 / 969 tok/s | near-exact (decode KL 0.008) |
+| 16 GiB cap + NVMe | `nvme` | 14.4 tok/s | 650 / not run | near-exact (same CPU lane) |
 | 55 GiB cap + NVMe | `nvme-exact` | 8.3 tok/s | 564 / 806 tok/s | bit-exact |
 | 55 GiB cap + NVMe + 1x Arc Pro B70 | `nvme` + `GLM53_B70=1` | 26.5 tok/s | 658 / 968 tok/s | near-exact (decode KL 0.003) |
 
@@ -27,7 +27,7 @@ omarchy plugin add https://github.com/sybil-solutions/omarchy-local-ai --enable
 on a fast local NVMe filesystem (xfs or ext4).
 
 ```bash
-IMG=ghcr.io/sybil-solutions/glm53-flash-offload@sha256:4732a063fa9e28d4d5dc7b2c3b57cb7ed84ecfff40caeb4b5bc59d71be1882b3
+IMG=ghcr.io/sybil-solutions/glm53-flash-offload@sha256:aa74200f16c86588b101be2315aed2f643d148559179eef52a02599016b56e69   # v4.6-nvme
 hf download turboderp/GLM-5.3-Flash-exl3 --revision 332ab457b709b7ba30dd9a448be5de03b80a7ac9 --local-dir /data/glm53
 docker run --rm -v /data/glm53:/models:ro -v /mnt/nvme/glm53:/nvx "$IMG" pack-store     # once: 117 GB expert store
 docker run -d --name glm53 --gpus '"device=0"' --memory 55g --memory-swap 55g --shm-size 1g --ulimit memlock=-1 \
@@ -80,11 +80,12 @@ is kept in one of three tiers. Two lanes compute them at the same time:
 - **Victim ring.** Evicted experts are parked in a 24-slot VRAM ring. A copy engine drains them to RAM off the
   critical path (~7 GB/s of write-backs at C1).
 
-**Where the time goes now** (C1, 62 ms per token): copying admitted experts to VRAM 28 %, non-MoE GPU work 18 %,
-NVMe waits 16 %, waiting for the CPU lane 15 %, the MoE kernel 14 %, host gaps 8 %. No resource is saturated: each is
-idle 35-75 % of the time, because every layer waits on its slowest lane. Better scheduling alone would reach about
-20 tok/s. Every lane at its hardware floor would reach about 43. DRAM traffic caps it at about 52 unless fewer bytes
-move per token. Details: [docs/how-it-works.md](docs/how-it-works.md).
+**Where the time goes now** (v4.6, 55 GiB, C1, 55.8 ms per token): copying admitted experts to VRAM 31 %, non-MoE GPU
+work 20 % (KDA/DSA attention GEMVs at 50-57 % of VRAM bandwidth), the MoE kernel 18 %, waiting for the CPU lane 18 %,
+NVMe waits 10 %, host 2 % (the decode lookahead removed the step-boundary gaps). No resource is saturated: the GPU does
+real work 70 % of the time, the CPU lane 60 %, PCIe and NVMe run at under 40 % of their ceilings, because every layer
+waits on its slowest lane. Better scheduling alone would reach about 20 tok/s; every lane at its hardware floor about
+41. Profile: moetier `docs/latency-glm53-v46.md`. Details: [docs/how-it-works.md](docs/how-it-works.md).
 
 ## Tune it for your machine
 
