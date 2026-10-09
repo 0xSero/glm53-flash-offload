@@ -5,19 +5,25 @@ copies each into VRAM staging, permutes it into exl3xpu blob order (glmtier.make
 pointer table at the slot. For a request it H2Ds the pick rows, runs exl3xpu moe_forward (_moe_n128.so, swiglu clamp
 10) with one expert per row, D2Hs the weighted rows and publishes DONE_SEQ.
 
-Env: N137_RING (/ring/ring), N137_STORE (/g/glm53_flash_exl3_3.05bpw_experts.bin), N137_SPIN_CPU (cpu to pin),
-     N137_COPY (sysptr | torch), N137_LOG (json stats path), GU/DN splits (8/4), N137_READERS (8)
+It creates the ring file at startup, so it starts first; the 3090 engine (GLM53_B70=1) attaches to it, sends the key
+set to load (LOAD), then one request per decode MoE layer call that has B70 picks.
+Env: GLM53_B70_RING (/run/local-ai/shared/b70.ring), GLM53_NV_STORE (/nvx/glm53_flash_exl3_3.05bpw_experts.bin, the
+     same packed store the engine reads), GLM53_B70_SPIN_CPU (pin the polling thread; unset = no pin), GLM53_B70_COPY
+     (sysptr | usm | torch), GLM53_B70_LOG (json stats path), GLM53_B70_PROF, GLM53_B70_READERS (8), GLM53_B70_MOE_LIB
+     (default b70tier/kernels/moe-n128/_moe_n128.so; overrides the base image's EXL3_MOE_LIB), GU/DN splits (8/4)
 """
 import concurrent.futures as cf, ctypes, json, mmap, os, sys, time
 import numpy as np
 import torch
 
-sys.path.insert(0, "/opt/trellis-serve/xpu")
+sys.path.insert(0, os.environ.get("EXL3XPU_PATH", "/opt/trellis-serve/xpu"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-os.environ.setdefault("EXL3_MOE_LIB", "/n128/_moe_n128.so")
+# the base image sets EXL3_MOE_LIB to its stock _moe_sgl.so (no swiglu clamp): always point it at the GLM build
+os.environ["EXL3_MOE_LIB"] = os.environ.get("GLM53_B70_MOE_LIB", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                                             "kernels", "moe-n128", "_moe_n128.so"))
 from exl3xpu import moe_offload
 from exl3xpu.moe_offload import s64
-from exl3xpu.glmtier import make_perm
+from glmperm import make_perm
 import ring as RG
 
 H, I, K, E = 4096, 2048, 3, 288
@@ -30,20 +36,20 @@ def log(*a):
 
 class Server:
     def __init__(self):
-        self.r = RG.Ring(os.environ.get("N137_RING", "/ring/ring"))
+        self.r = RG.Ring(os.environ.get("GLM53_B70_RING", RG.DEFAULT_PATH))
         self.dev = torch.device("xpu", 0)
         self.X = moe_offload.ops()
         self.X.moe_set_splits(int(os.environ.get("GU", "8")), int(os.environ.get("DN", "4")))
         self.X.moe_set_prefill_min_m(1 << 30)
         self.blob = int(self.X.blob_bytes(H, I, K))
-        store = os.environ.get("N137_STORE", "/g/glm53_flash_exl3_3.05bpw_experts.bin")
+        store = os.environ.get("GLM53_NV_STORE", "/nvx/glm53_flash_exl3_3.05bpw_experts.bin")
         meta = json.load(open(store.rsplit(".", 1)[0] + ".json"))
         self.rec = int(meta["record_bytes"])
         assert self.rec == self.blob, (self.rec, self.blob)
         self.L = int(meta["n_layers"])
         self.fd = os.open(store, os.O_RDONLY | os.O_DIRECT)
         self.perm = make_perm(H, I, K).to(self.dev)
-        self.copy_mode = os.environ.get("N137_COPY", "sysptr")
+        self.copy_mode = os.environ.get("GLM53_B70_COPY", "sysptr")
         self.slots = None
         self.slot_of = np.full(self.L * E, -1, np.int64)
         self.ptrs = torch.zeros(self.L * E, dtype=torch.int64, device=self.dev)
@@ -67,8 +73,8 @@ class Server:
         self.x_addr = self.r.base + RG.OFF_X
         self.out_addr = self.r.base + RG.OFF_OUT
         self.t = dict(calls=0, seen_to_done_ns=[], kern_ns=[], np=[])
-        self.logp = os.environ.get("N137_LOG", "")
-        self.prof = [] if os.environ.get("N137_PROF") else None
+        self.logp = os.environ.get("GLM53_B70_LOG", "")
+        self.prof = [] if os.environ.get("GLM53_B70_PROF") else None
         p = torch.xpu.get_device_properties(self.dev)
         log(f"device {p.name} total {p.total_memory / 2**30:.2f} GiB, blob {self.blob}, store layers {self.L}, "
             f"copy {self.copy_mode}")
@@ -98,7 +104,7 @@ class Server:
                 got += k
             return b
 
-        pool = cf.ThreadPoolExecutor(int(os.environ.get("N137_READERS", "8")))
+        pool = cf.ThreadPoolExecutor(int(os.environ.get("GLM53_B70_READERS", "8")))
         self.slot_of[:] = -1
         base = s64(self.slots.data_ptr())
         for i in range(0, n, R):
@@ -126,12 +132,22 @@ class Server:
         # spot check: slot bytes == permuted record (first, middle, last)
         bad = 0
         for j in sorted({0, n // 2, n - 1}):
-            raw = torch.frombuffer(bytearray(os.pread(os.open(os.environ.get("N137_STORE", "/g/glm53_flash_exl3_3.05bpw_experts.bin"), os.O_RDONLY), self.rec, int(keys[j]) * self.rec)), dtype=torch.uint8)
+            raw = torch.frombuffer(bytearray(os.pread(os.open(os.environ.get("GLM53_NV_STORE", "/nvx/glm53_flash_exl3_3.05bpw_experts.bin"), os.O_RDONLY), self.rec, int(keys[j]) * self.rec)), dtype=torch.uint8)
             want = raw.view(torch.int32)[self.perm.cpu()].contiguous()
             got = self.slots[j].view(torch.int32).cpu()
             bad += int(not torch.equal(want, got))
         host.close()
         dt = time.perf_counter() - t0
+        # warm every row count once (first moe_forward per shape JIT-compiles, measured up to 1.5 s on the 3090 path)
+        tw = time.perf_counter()
+        li0 = int(keys[0]) // E
+        e0 = int(keys[0]) % E
+        for m in range(1, RG.MAXP + 1):
+            self.X.moe_forward(self.d_x[:m], torch.full((m, 1), e0, dtype=torch.int32, device=self.dev),
+                               torch.full((m, 1), 0.1, dtype=torch.float32, device=self.dev),
+                               self.ptrs[li0 * E:(li0 + 1) * E], I, K, E)
+        torch.xpu.synchronize()
+        log(f"warm-up of 1..{RG.MAXP} rows in {time.perf_counter() - tw:.1f} s")
         log(f"LOAD {n} experts ({n * self.blob / 1e9:.2f} GB) in {dt:.1f} s ({n * self.rec / dt / 1e9:.2f} GB/s), "
             f"spot check bad {bad}, mem allocated {torch.xpu.memory_allocated(self.dev) / 2**30:.2f} GiB")
         return bad
@@ -251,7 +267,10 @@ class Server:
 
 
 if __name__ == "__main__":
-    cpu = os.environ.get("N137_SPIN_CPU")
+    cpu = os.environ.get("GLM53_B70_SPIN_CPU")
     if cpu:
         os.sched_setaffinity(0, {int(cpu)})
+    rp = os.environ.get("GLM53_B70_RING", RG.DEFAULT_PATH)
+    os.makedirs(os.path.dirname(rp), exist_ok=True)
+    RG.Ring(rp, create=True)       # fresh ring (zeroed header): the engine attaches after this
     Server().loop()

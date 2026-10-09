@@ -22,8 +22,8 @@ Env: GLM53_NV_RAM_GB (auto), GLM53_NV_MARGIN_GB (3), GLM53_NV_THREADS (16 reader
      GLM53_NV_CPU_MODE (-1 auto), GLM53_NV_CLAMP (1: swiglu clamp on the CPU share, B004 fix), GLM53_NV_POL (cost model
      "g0,thit,tzc,ca,cb,ctok,push,nvlat,nvdeep,nvone"), GLM53_NV_MAXCPU (32), GLM53_NV_CTL_CPU (25),
      GLM53_NV_READER_CPUS (26-39), GLM53_NV_TIMEOUT_S (20), GLM53_NV_COPY_GRID (48)
-N137 B70 expert tier (needs the CPU tier, GLM53_NV_CPU=1): GLM53_B70 (0), GLM53_B70_RING (/ring/ring, written by
-     b70/b70srv.py on the B70), GLM53_B70_N (3000 experts), GLM53_B70_ORDER (score: warm-score order after the VRAM warm
+N137 B70 expert tier (needs the CPU tier, GLM53_NV_CPU=1): GLM53_B70 (0), GLM53_B70_RING (/run/local-ai/shared/b70.ring,
+     created by b70tier/b70srv.py on the B70), GLM53_B70_N (3000 experts), GLM53_B70_ORDER (score: warm-score order after the VRAM warm
      set | rr: the RAM tier's round-robin rank), GLM53_B70_TIMEOUT_S (2). Decode picks of B70-resident experts are masked
      on the 3090 and computed on the B70; their RAM copies are dropped (exclusive) and RAM refills with colder experts.
 """
@@ -102,7 +102,7 @@ class Nv2:
         self.cpu_on = g("GLM53_NV_CPU", "0") == "1"
         self.b70 = g("GLM53_B70", "0") == "1"
         assert not self.b70 or self.cpu_on, "GLM53_B70=1 needs the CPU tier (GLM53_NV_CPU=1): the CPU worker runs the B70 lane"
-        self.b70_ring = g("GLM53_B70_RING", "/ring/ring")
+        self.b70_ring = g("GLM53_B70_RING", "/run/local-ai/shared/b70.ring")
         self.b70_timeout = float(g("GLM53_B70_TIMEOUT_S", "2"))
         self.b70_keys = []
         self.timeout_ns = int(float(g("GLM53_NV_TIMEOUT_S", "5")) * 1e9)

@@ -1,6 +1,7 @@
 """N137 B70 expert tier: shared host ring between the 3090 engine (client) and the B70 expert server.
 
-One file in a host tmpfs directory (/dev/shm/n137/ring), mapped MAP_SHARED by both containers. No peer-to-peer:
+One file in a host tmpfs directory shared by both containers (default /run/local-ai/shared/b70.ring, env
+GLM53_B70_RING), mapped MAP_SHARED. No peer-to-peer:
 the 3090 side writes x rows + picks here, the B70 server H2Ds them, runs moe_forward, D2Hs the weighted rows back.
 
 Layout (little endian, offsets in bytes):
@@ -14,6 +15,8 @@ then HDR[DONE_SEQ] = s. A LOAD: client writes KEYS + HDR[NKEYS], then HDR[LOAD_S
 with HDR[STATE] = READY (or ERROR + HDR[ERR]).
 """
 import mmap, os
+
+DEFAULT_PATH = "/run/local-ai/shared/b70.ring"
 import numpy as np
 
 MAGIC = 0x4E31333752494E47      # "N137RING"

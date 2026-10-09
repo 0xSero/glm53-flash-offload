@@ -152,6 +152,18 @@ docker run -d --name glm53 --gpus '"device=0"' --ulimit memlock=-1 --shm-size 16
 Run it with the `fast` command plus `-e GLM53_MODE=exact`. Stock exllamav3, with the experts that do not fit in VRAM on
 its CPU worker, decodes this model at 7.5-8.4 tok/s on the same host.
 
+## `nvme` + B70 expert tier, 55 GiB (campaign N137, 2026-10-09)
+
+Same session, "tier off / tier on". Full tables, the 120 GiB pair and quality: [b70-tier.md](b70-tier.md).
+
+| prefill size | prefill speed | decode speed | concurrency | kv cache | gpu count |
+|---|---|---|---|---|---|
+| 8k | 657 / 648-658 | 17.48 / 26.40-26.61 | 1 | 131k fp16 | 1 / 2 |
+| 8k | - | 17.84 / 30.34-30.63 | 2 | 131k fp16 | 1 / 2 |
+| 8k | - | 19.11 / 33.00-33.54 | 4 | 131k fp16 | 1 / 2 |
+| 32k | 966 / 968-974 | 16.28 / 24.60-24.92 | 1 | 131k fp16 | 1 / 2 |
+| 32k | - | 17.35 / 29.09 | 2 | 131k fp16 | 1 / 2 |
+
 ## Same-session pairs (what a setting is worth)
 
 | pair, same session, 55 GiB `nvme` | A | B | change |

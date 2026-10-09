@@ -11,7 +11,7 @@ ref = np.load("/out/cuda_ref.npz")
 meta = json.load(open("/out/cuda_ref.json"))
 e.b70_test_engine(43, E, H)
 keys = [L["li"] * E + x for L in meta["layers"] for x in L["experts"]]
-ms = e.b70_attach("/ring/ring", torch.tensor(keys, dtype=torch.int64), 900.0)
+ms = e.b70_attach(os.environ.get("GLM53_B70_RING", "/run/local-ai/shared/b70.ring"), torch.tensor(keys, dtype=torch.int64), 900.0)
 print("attach + LOAD", ms, "ms", flush=True)
 rows = []
 for c in meta["cases"]:

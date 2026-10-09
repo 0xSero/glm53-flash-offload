@@ -3,16 +3,16 @@
   numerics  LOAD the 48 cuda_ref experts, replay every cuda_ref case (one ring row per pick, rows added per token in
             fp32 on the host), compare with the exllamav3 CUDA output and the fp64 reference.
   latency   LOAD N keys (warm-score ranks after the 3090's VRAM set), then time post -> DONE round trips for np rows.
-Env: N137_RING, REF (/out/cuda_ref.npz), MODE (numerics | latency | both), NKEYS (3000), WARM (stats_own_dec.json),
+Env: GLM53_B70_RING, REF (/out/cuda_ref.npz), MODE (numerics | latency | both), NKEYS (3000), WARM (stats_own_dec.json),
      VRAM_SKIP (1376), CALLS (3000), OUT (/out/test_ring.json)
 """
 import json, os, sys, time
 import numpy as np
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import ring as RG
 
 E, H = RG.E, RG.H
-r = RG.Ring(os.environ.get("N137_RING", "/ring/ring"))
+r = RG.Ring(os.environ.get("GLM53_B70_RING", RG.DEFAULT_PATH))
 res = {}
 seq = [int(r.hdr[RG.W_REQ_SEQ])]
 lseq = [int(r.hdr[RG.W_LOAD_SEQ])]
