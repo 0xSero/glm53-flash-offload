@@ -1,11 +1,11 @@
 ---
 name: glm53-offload-setup
-description: Set up, measure and tune GLM-5.3-Flash (EXL3 3.05 bpw) with glm53-flash-offload on the user's own Linux machine with one 24 GB NVIDIA GPU, using RAM and NVMe for the experts that do not fit in VRAM. Use when asked to "run GLM-5.3-Flash on my 3090/4090", "set up glm53-flash-offload", "pick the RAM/NVMe mode", "build the expert store", "why is it slow on my box", or "tune it for my hardware". It detects the hardware, chooses the mode, packs and checks the store, starts the server, measures the standard table, tunes one setting at a time against a control, and reports back. Not for other models, multi-GPU serving, or rented cloud GPUs.
+description: Set up, measure and tune GLM-5.3-Flash (EXL3 3.05 bpw) with glm-flash-lite on the user's own Linux machine with one 24 GB NVIDIA GPU, using RAM and NVMe for the experts that do not fit in VRAM. Use when asked to "run GLM-5.3-Flash on my 3090/4090", "set up glm-flash-lite" (formerly glm53-flash-offload), "pick the RAM/NVMe mode", "build the expert store", "why is it slow on my box", or "tune it for my hardware". It detects the hardware, chooses the mode, packs and checks the store, starts the server, measures the standard table, tunes one setting at a time against a control, and reports back. Not for other models, multi-GPU serving, or rented cloud GPUs.
 ---
 
-# GLM-5.3-Flash offload: set up on the user's machine
+# glm-flash-lite: set up GLM-5.3-Flash on the user's machine
 
-You set up [glm53-flash-offload](https://github.com/sybil-solutions/glm53-flash-offload) on the machine in front of
+You set up [glm-flash-lite](https://github.com/sybil-solutions/glm-flash-lite) on the machine in front of
 you, measure it, tune it, and report how it compares with the reference host. Work step by step. Show the user what you
 found before anything slow or destructive.
 
@@ -39,7 +39,7 @@ To learn how the tiers work, read `docs/how-it-works.md` in the repo. For error 
 | image (all-RAM `fast` / `exact`) | `ghcr.io/0xsero/glm53-flash-offload@sha256:bb633b0bcb85573ad40b6c408af5e1036ae062c593e42479f4e4d2ab521e551d` |
 | weights | `turboderp/GLM-5.3-Flash-exl3`, revision `332ab457b709b7ba30dd9a448be5de03b80a7ac9` (branch 3.05bpw), 125.3 GB |
 | expert store | built from the weights by the image: 117.3 GB, 12,384 records of 9,474,048 B |
-| repo (bench scripts, quality panel) | `git clone https://github.com/sybil-solutions/glm53-flash-offload` (Python 3, standard library only) |
+| repo (bench scripts, quality panel) | `git clone https://github.com/sybil-solutions/glm-flash-lite` (Python 3, standard library only) |
 
 ## Step 1: detect the hardware
 

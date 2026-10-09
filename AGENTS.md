@@ -1,4 +1,4 @@
-# Agent notes
+# glm-flash-lite: agent notes
 
 To set up, measure or tune GLM-5.3-Flash with this repo on a user's own machine, follow
 [`skills/glm53-offload-setup/SKILL.md`](skills/glm53-offload-setup/SKILL.md). It is plain Markdown with YAML

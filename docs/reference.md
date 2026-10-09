@@ -1,4 +1,4 @@
-# glm53-flash-offload: full reference
+# glm-flash-lite: full reference
 
 The complete previous README: every campaign table, quality check, image smoke, configuration variable and
 reproduction pin. The short start-here page is the [README](../README.md); current tables are in
@@ -476,7 +476,7 @@ results/                raw JSONs of the measured runs (G067, C056, G066a, C052e
 ```
 
 Updating the image: a fix here is a new commit; the image build in
-[0xSero/local-ai-images](https://github.com/0xSero/local-ai-images) (`glm53-flash-offload/`) pins this repo by
+[0xSero/local-ai-images](https://github.com/0xSero/local-ai-images) (directory `glm53-flash-offload/`, the image name) pins this repo by
 commit, so bumping that pin produces a new attested digest. To try a checkout without rebuilding, mount it over
 `/opt/glm53` (the extensions rebuild on first start; nvcc and ninja are in the image).
 
