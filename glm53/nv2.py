@@ -110,7 +110,8 @@ class Nv2:
         self.wb_on = g("GLM53_NV_EXCL", "1") == "1"
         self.prefetch = g("GLM53_NV_PREFETCH", "0") == "1"
         # N136: the layer-ahead routing guess runs on a side stream concurrently with this layer's router (both read the
-        # same MoE input; 36-block GEMVs on an 82-SM card), instead of after it on the compute stream (GLM53_NV_PFSIDE=1)
+        # same MoE input; 36-block GEMVs on an 82-SM card), instead of after it on the compute stream (GLM53_NV_PFSIDE=1;
+        # single-row decode only, see predict_early)
         self.pfside = self.prefetch and g("GLM53_NV_PFSIDE", "0") == "1"
         self._pfe = None
         if self.pfside:
@@ -367,7 +368,10 @@ class Nv2:
 
     def predict_early(self, li, z, bsz):
         """N136: launch layer li+1's routing guess on the side stream before layer li's router runs (decode only)."""
-        if not self.pfside or li + 1 >= self.L or bsz > 8 or bsz * 8 > self.pool.admit_max:
+        # bsz 1 only: for more rows exllamav3's routing projection is routing_gemm_det, whose decode-class calls share
+        # per-device static workspaces, so a concurrent guess on the side stream would corrupt the layer's own routing
+        # (N136 AB1: C4 streams looped). The single-row GEMV path has no shared scratch.
+        if not self.pfside or li + 1 >= self.L or bsz != 1:
             return
         main = torch.cuda.current_stream(self.dev)
         e0 = self._pfev[self._pfev_i]; e1 = self._pfev[self._pfev_i + 1]
