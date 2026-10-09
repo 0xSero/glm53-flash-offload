@@ -173,6 +173,7 @@ Same session, "tier off / tier on". Full tables, the 120 GiB pair and quality: [
 | exact host-stalled NVMe engine (S1c) vs device-side engine + exclusive RAM tier (S2a), 2026-10-07 | C1 7.26, prefill 515 / 762 | C1 8.28, prefill 564 / 806 | +14 % decode |
 | S2a vs S2a + CPU lane + prefetch (S3a), 2026-10-07 | C1 8.28 | C1 15.30 | +85 % decode, KL 0.0047 |
 | RAM cap 55 vs 58 GiB, prefetch off (2026-10-07) | C1 14.71 | C1 14.75 (+341 RAM experts) | no measurable change |
+| CPU-lane kernel ft_core vs N135 (`GLM53_NV_CPU_KERN` 0 vs 1, v4.3 image, 2026-10-09; B70 server on cpus 40-47 in both) | C1 17.70, C4 19.25, prefill 656; CPU 0.209 ms/expert | C1 18.80, C4 19.75, prefill 659; CPU 0.196 ms/expert | **+6.2 % C1, +2.6 % C4**; `MERGE=0` 18.71 / 19.66 (neutral) |
 
 "Prefetch off is faster" (+27-35 %), reported earlier, compared arms run hours apart. The same-session pair above
 reverses it. Analysis: `docs/latency-glm53-c1.md` in [moetier](https://github.com/sybil-solutions/moetier).

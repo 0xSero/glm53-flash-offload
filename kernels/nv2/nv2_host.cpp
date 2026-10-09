@@ -20,6 +20,25 @@
 #include <execinfo.h>
 #include <signal.h>
 #include "ft_core.h"
+#include "ft_n135.h"
+// N135 CPU-lane forward switch: GLM53_NV_CPU_KERN=1 -> n135::moe_forward4 (ft_n135.h), default 0 -> ft_core moe_forward
+static int g_cpu_kern = -1;
+static inline void cpu_kern_init()
+{
+    if (g_cpu_kern >= 0) return;
+    const char* s = getenv("GLM53_NV_CPU_KERN");
+    g_cpu_kern = s && *s ? atoi(s) : 0;
+    n135::configure_env(); n135::init_p16();
+    fprintf(stderr, "[nv2] CPU lane kernel: %s (rg %d cg %d rd %d cd %d bandmaxm %d pfr %d p16 %d rt %d merge %d)\n", g_cpu_kern == 1 ? "n135 v4" : "ft_core moe_forward",
+            n135::K_.rg, n135::K_.cg, n135::K_.rd, n135::K_.cd, n135::K_.bandmaxm, n135::K_.pfr, n135::K_.kern, n135::K_.rt, n135::K_.merge);
+}
+static inline void cpu_moe_forward(Pool& pool, const Layer& L, const float* x, int ntok, const std::vector<std::vector<std::pair<int, float>>>& route,
+                                   float* out, int mode, PhaseTimes* pt = nullptr)
+{
+    cpu_kern_init();
+    if (g_cpu_kern == 1) n135::moe_forward4(pool, L, x, ntok, route, out, mode);
+    else moe_forward(pool, L, x, ntok, route, out, mode, pt);
+}
 #include "nv2_shared.h"
 #include <sys/mman.h>
 #include <fcntl.h>
@@ -597,7 +616,31 @@ struct Engine
                 }
         }
         bool any1 = false; for (auto& v : r1) any1 |= !v.empty();
-        if (any1 || !nb) moe_forward(pool, Ly, xf.data(), ntok, r1, hout, mode);
+        if (g_cpu_kern == 1 && n135::K_.merge && any2)
+        {
+            // N135: ONE forward over the RAM and the NVMe->CPU picks; an NVC job is bound (waits for its landing) by the
+            // first worker that reaches it, after every resident job's units
+            std::vector<uint8_t> late(E, 0);
+            for (int k = 0; k < np; ++k) if (cj.lane[k] == LN_NVC) { late[cj.e[k]] = 1; r1[cj.t[k]].push_back({ cj.e[k], cj.w[k] }); }
+            std::function<bool(int)> bind_late = [&](int ex) -> bool {
+                std::unique_lock<std::mutex> lk(mu);
+                int k = -1;
+                for (int q = 0; q < np; ++q) if (cj.e[q] == ex && cj.lane[q] == LN_NVC) { k = q; break; }
+                if (k < 0) return false;
+                const int key = li * E + ex;
+                if (kst[key] != KS_RES)
+                {
+                    const double tw = now_ms();
+                    land_cv.wait_for(lk, std::chrono::seconds(10), [&] { return kst[key] == KS_RES; });
+                    C.cpu_wait_land_ns += (long long) ((now_ms() - tw) * 1e6);
+                    if (kst[key] != KS_RES) { hc[HC_ERR] = 32; return false; }
+                }
+                return bind(k);
+            };
+            n135::moe_forward4(pool, Ly, xf.data(), ntok, r1, hout, mode, late.data(), &bind_late);
+            goto n135_done;
+        }
+        if (any1 || !nb) cpu_moe_forward(pool, Ly, xf.data(), ntok, r1, hout, mode);
         else std::memset(hout, 0, size_t(ntok) * H * 4);
         if (any2)
         {
@@ -618,9 +661,10 @@ struct Engine
                 }
             }
             tmpout.resize(size_t(ntok) * H);
-            moe_forward(pool, Ly, xf.data(), ntok, r2, tmpout.data(), mode);
+            cpu_moe_forward(pool, Ly, xf.data(), ntok, r2, tmpout.data(), mode);
             for (size_t i = 0; i < size_t(ntok) * H; ++i) hout[i] += tmpout[i];
         }
+    n135_done:
         {
             std::lock_guard<std::mutex> lk(mu);
             for (int s : pinned) pinc[s]--;
@@ -1032,7 +1076,7 @@ void reset_counters() { Counters& c = G->C; c.~Counters(); new (&c) Counters(); 
 void cpu_init(int64_t threads, std::vector<int64_t> cpus, int64_t mode, double act_limit)
 {
     Engine& e = *G;
-    init_perm(); init_tables();
+    init_perm(); init_tables(); cpu_kern_init();
     std::vector<int> c(cpus.begin(), cpus.end());
     cpu_set_t saved; sched_getaffinity(0, sizeof(saved), &saved);
     e.pool.start(int(threads), c);
@@ -1092,7 +1136,7 @@ at::Tensor cpu_forward(int64_t li, at::Tensor x, at::Tensor sel, at::Tensor w, i
     }
     int maxm = 0; { std::vector<int> cnt(e.E, 0); for (auto& r : route) for (auto& pr : r) maxm = std::max(maxm, ++cnt[pr.first]); }
     const int md = mode >= 0 ? int(mode) : (maxm <= 2 ? 2 : 0);
-    moe_forward(e.pool, Ly, x.data_ptr<float>(), m, route, out.data_ptr<float>(), md);
+    cpu_moe_forward(e.pool, Ly, x.data_ptr<float>(), m, route, out.data_ptr<float>(), md);
     std::lock_guard<std::mutex> lk(e.mu);
     for (int s : pinned) e.pinc[s]--;
     return out;
