@@ -9,6 +9,7 @@ NVMe for the experts that do not fit on the GPU.
 | **55 GiB cap** + NVMe | **`nvme`** | **17.3 tok/s** | 662 / 965 tok/s | near-exact (decode KL 0.005) |
 | 16 GiB cap + NVMe | `nvme` | 12.9 tok/s | 628 / not run | near-exact (same CPU lane) |
 | 55 GiB cap + NVMe | `nvme-exact` | 8.3 tok/s | 564 / 806 tok/s | bit-exact |
+| 55 GiB cap + NVMe + 1x Arc Pro B70 | `nvme` + `GLM53_B70=1` | 26.5 tok/s | 658 / 968 tok/s | near-exact (decode KL 0.003) |
 
 Measured on 1x RTX 3090 (PCIe 4.0 x16), AMD EPYC 7443P (24 cores), 8-channel DDR4, and 4x Samsung 9100 PRO in RAID0.
 Decode runs each answer to its natural end. Full tables, dates and raw files: [docs/results.md](docs/results.md).
@@ -95,6 +96,7 @@ picks the mode, builds the store, measures, and tunes one setting at a time.
 
 - [docs/results.md](docs/results.md): every measured table, per mode, with dates and raw files
 - [docs/how-it-works.md](docs/how-it-works.md): the mechanisms, how each tier is sized, and every setting
+- [docs/b70-tier.md](docs/b70-tier.md): optional Intel Arc Pro B70 as a second expert tier (`GLM53_B70=1`)
 - [docs/troubleshooting.md](docs/troubleshooting.md): error messages and fixes
 - [docs/reference.md](docs/reference.md): the full campaign record (image smokes, quality method, reproduction pins)
 

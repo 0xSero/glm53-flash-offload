@@ -156,6 +156,15 @@ if [ "$NV_MODE" != "0" ]; then
     python3 "$ROOT/docker/preflight.py" odirect "$GLM53_NV_STORE" || exit 1
     log "NVMe store $GLM53_NV_STORE ($(( $(stat -c %s "$GLM53_NV_STORE") / 1000000000 )) GB), RAM tier ${GLM53_NV_RAM_GB:-auto}, CPU lane ${GLM53_NV_CPU:-0}"
 fi
+# ---- B70 expert tier (GLM53_B70=1, default off): a B70 expert server (b70tier/b70srv.py, Intel XPU image) must be up
+# and own the ring in the shared tmpfs dir; the engine sends it the expert set at warm-up
+if [ "${GLM53_B70:-0}" = "1" ]; then
+    { [ "$NV_MODE" = "2" ] && [ "${GLM53_NV_CPU:-0}" = "1" ]; } || die "GLM53_B70=1 needs GLM53_MODE=nvme (the CPU worker runs the B70 lane)"
+    RING=${GLM53_B70_RING:-/run/local-ai/shared/b70.ring}
+    for _ in $(seq 1 "${GLM53_B70_WAIT_S:-180}"); do [ -s "$RING" ] && break; sleep 1; done
+    [ -s "$RING" ] || die "GLM53_B70=1: no B70 expert server ring at $RING (start the B70 server first with the same dir mounted)"
+    log "B70 expert tier: ring $RING, ${GLM53_B70_N:-3000} experts on the B70"
+fi
 
 # ---- model ------------------------------------------------------------------------------------------------------
 if [ ! -f "$MODEL/config.json" ]; then
