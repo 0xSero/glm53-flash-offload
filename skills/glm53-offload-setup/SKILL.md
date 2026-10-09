@@ -35,7 +35,7 @@ To learn how the tiers work, read `docs/how-it-works.md` in the repo. For error 
 
 | item | value |
 |---|---|
-| image (NVMe modes) | `ghcr.io/sybil-solutions/glm53-flash-offload@sha256:4732a063fa9e28d4d5dc7b2c3b57cb7ed84ecfff40caeb4b5bc59d71be1882b3` (v4.2-nvme, repo `3bdb502`) |
+| image (NVMe modes) | `ghcr.io/sybil-solutions/glm53-flash-offload@sha256:aa74200f16c86588b101be2315aed2f643d148559179eef52a02599016b56e69` (v4.6-nvme, repo `0fbc0c5`) |
 | image (all-RAM `fast` / `exact`) | `ghcr.io/0xsero/glm53-flash-offload@sha256:bb633b0bcb85573ad40b6c408af5e1036ae062c593e42479f4e4d2ab521e551d` |
 | weights | `turboderp/GLM-5.3-Flash-exl3`, revision `332ab457b709b7ba30dd9a448be5de03b80a7ac9` (branch 3.05bpw), 125.3 GB |
 | expert store | built from the weights by the image: 117.3 GB, 12,384 records of 9,474,048 B |
@@ -134,7 +134,7 @@ The store needs a local NVMe filesystem that supports `O_DIRECT`: plain xfs or e
 - **Not suitable:** a loop file on btrfs, network filesystems, FUSE, or tmpfs. Some LUKS setups refuse `O_DIRECT` too.
 - **Check it** with the image's own probe. It needs no GPU:
   ```bash
-  IMG=ghcr.io/sybil-solutions/glm53-flash-offload@sha256:4732a063fa9e28d4d5dc7b2c3b57cb7ed84ecfff40caeb4b5bc59d71be1882b3
+  IMG=ghcr.io/sybil-solutions/glm53-flash-offload@sha256:aa74200f16c86588b101be2315aed2f643d148559179eef52a02599016b56e69
   timeout 900 docker pull "$IMG"
   mkdir -p /path/on/nvme/glm53 && docker run --rm -v /path/on/nvme/glm53:/nvx "$IMG" python3 /opt/glm53/docker/preflight.py odirect /nvx && echo O_DIRECT_OK
   ```
@@ -223,7 +223,7 @@ URL: `http://127.0.0.1:30000/v1`. Model: `glm-5.3-flash`. Any API key works.
 From a clone of the repo, with the server idle and nothing else heavy running:
 
 ```bash
-python3 bench/sweep.py --url http://127.0.0.1:30000 --card mybox --config "v4.2-nvme nvme 55g" --template glm \
+python3 bench/sweep.py --url http://127.0.0.1:30000 --card mybox --config "v4.6-nvme nvme 55g" --template glm \
   --prefill 8192 32768 --conc 1 2 4 --reps 3 --dec-reps 2 --no-early-exit --out sweep_A.json
 python3 bench/score_ref_panel.py --url http://127.0.0.1:30000 --panel reference/glm-5.3-flash-exl3-ref-panel.json --out score_A.json
 ```

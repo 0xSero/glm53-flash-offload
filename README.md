@@ -7,7 +7,7 @@ NVMe for the experts that do not fit on the GPU.
 |---|---|---|---|---|
 | 218 GiB free | `fast` | 28.2 tok/s | 710 / 951 tok/s | near-exact (decode KL 0.005) |
 | **55 GiB cap** + NVMe | **`nvme`** | **19.5 tok/s** | 664 / 969 tok/s | near-exact (decode KL 0.008) |
-| 16 GiB cap + NVMe | `nvme` | 14.4 tok/s | 650 / not run | near-exact (same CPU lane) |
+| 16 GiB cap + NVMe | `nvme` | 14.7 tok/s (lab; 14.38 sweep) | 650 / not run | near-exact (same CPU lane) |
 | 55 GiB cap + NVMe | `nvme-exact` | 8.3 tok/s | 564 / 806 tok/s | bit-exact |
 | 55 GiB cap + NVMe + 1x Arc Pro B70 | `nvme` + `GLM53_B70=1` | 26.5 tok/s | 658 / 968 tok/s | near-exact (decode KL 0.003) |
 
